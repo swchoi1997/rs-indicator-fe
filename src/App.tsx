@@ -117,7 +117,7 @@ function MacroCandleChart({
 
   if (!rawData || rawData.length === 0) {
     return (
-      <div className="flex items-center justify-center h-[420px] sm:h-[540px] lg:h-[640px] text-slate-400">
+      <div className="flex items-center justify-center h-[320px] sm:h-[540px] lg:h-[580px] xl:h-[620px] text-slate-400">
         데이터가 없습니다.
       </div>
     );
@@ -878,7 +878,7 @@ function MacroCandleChart({
         </div>
       </div>
 
-      <div className="relative w-full h-[380px] sm:h-[540px] lg:h-[580px] xl:h-[620px] select-none font-sans bg-slate-950/40 rounded-xl p-2 border border-slate-800/80 overflow-hidden">
+      <div className="relative w-full h-[320px] sm:h-[540px] lg:h-[580px] xl:h-[620px] select-none font-sans bg-slate-950/40 rounded-xl p-2 border border-slate-800/80 overflow-hidden">
         {/* 줌 상태일 때 나타나는 컨트롤 바 (좌우 이동 버튼 + 현재 위치 + 100% 리셋 버튼, 20% 투명도 = 80% 가시성) */}
         {isZoomed && (
           <div className="absolute top-2 right-2 z-30 flex items-center gap-1 p-0.5 sm:p-1 bg-slate-900/80 opacity-80 hover:opacity-100 border border-amber-500/30 rounded-lg shadow-xl backdrop-blur-md animate-fadeIn text-[10px] sm:text-xs transition-opacity">
@@ -2162,7 +2162,7 @@ export function App() {
                         );
                       })()}
 
-                      <div className="h-[380px] sm:h-[540px] lg:h-[580px] xl:h-[620px]">
+                      <div className="h-[320px] sm:h-[540px] lg:h-[580px] xl:h-[620px]">
                         <ResponsiveContainer width="100%" height="100%">
                           <LineChart data={cumInvestorData}>
                             <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
@@ -2266,7 +2266,7 @@ export function App() {
                         );
                       })()}
 
-                      <div className="h-[380px] sm:h-[540px] lg:h-[580px] xl:h-[620px]">
+                      <div className="h-[320px] sm:h-[540px] lg:h-[580px] xl:h-[620px]">
                         <ResponsiveContainer width="100%" height="100%">
                           <LineChart data={cumInvestorData}>
                             <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
@@ -2433,7 +2433,7 @@ export function App() {
                         );
                       })()}
 
-                      <div className="h-[380px] sm:h-[540px] lg:h-[580px] xl:h-[620px]">
+                      <div className="h-[320px] sm:h-[540px] lg:h-[580px] xl:h-[620px]">
                         <ResponsiveContainer width="100%" height="100%">
                           <BarChart data={dailyInvestorData}>
                             <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
@@ -2729,7 +2729,7 @@ export function App() {
                       {marketChartType === 'bar' ? (
                         <MacroCandleChart data={processedIndexData} symbol={activeItemCode} startDate={startDate} theme={theme} />
                       ) : (
-                        <div className="h-[380px] sm:h-[540px] lg:h-[580px] xl:h-[620px]">
+                        <div className="h-[320px] sm:h-[540px] lg:h-[580px] xl:h-[620px]">
                           <ResponsiveContainer width="100%" height="100%">
                             <LineChart data={processedIndexData.filter((d) => d.date >= startDate)}>
                               <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
@@ -2888,7 +2888,7 @@ export function App() {
                       {macroChartType === 'bar' ? (
                         <MacroCandleChart data={processedMacroData} symbol={activeItemCode} startDate={startDate} theme={theme} />
                       ) : (
-                        <div className="h-[380px] sm:h-[540px] lg:h-[580px] xl:h-[620px]">
+                        <div className="h-[320px] sm:h-[540px] lg:h-[580px] xl:h-[620px]">
                           <ResponsiveContainer width="100%" height="100%">
                             <LineChart data={processedMacroData.filter((d) => d.date >= startDate)}>
                               <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
@@ -3069,7 +3069,7 @@ export function App() {
                         {stockChartType === 'bar' ? (
                           <MacroCandleChart data={processedStockData} symbol={activeItemCode} startDate={startDate} theme={theme} />
                         ) : (
-                          <div className="h-[380px] sm:h-[540px] lg:h-[580px] xl:h-[620px]">
+                          <div className="h-[320px] sm:h-[540px] lg:h-[580px] xl:h-[620px]">
                             <ResponsiveContainer width="100%" height="100%">
                               <LineChart data={processedStockData.filter((d) => d.date >= startDate)}>
                                 <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
