@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import {
   TrendingUp,
   Activity,
@@ -10,7 +10,11 @@ import {
   Filter,
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
+  Check,
   Table as TableIcon,
+  Menu,
+  X,
 } from 'lucide-react';
 import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
@@ -86,10 +90,34 @@ function MacroCandleChart({
   const [showMA, setShowMA] = useState<boolean>(true);
   const [showBollinger, setShowBollinger] = useState<boolean>(false);
   const [showIchimoku, setShowIchimoku] = useState<boolean>(false);
+  const [isIndicatorDropdownOpen, setIsIndicatorDropdownOpen] = useState<boolean>(false);
+
+  // 차트 확대/축소 (Pinch-to-zoom & Pan) 상태 관리
+  const [viewRange, setViewRange] = useState<{ start: number; end: number } | null>(null);
+
+  useEffect(() => {
+    setViewRange(null);
+  }, [rawData, startDate, symbol]);
+
+  const touchRef = useRef<{
+    mode: 'none' | 'pinch' | 'pan';
+    initialDistance: number;
+    initialStart: number;
+    initialEnd: number;
+    initialTouchX: number;
+    hasMoved: boolean;
+  }>({
+    mode: 'none',
+    initialDistance: 0,
+    initialStart: 0,
+    initialEnd: 0,
+    initialTouchX: 0,
+    hasMoved: false,
+  });
 
   if (!rawData || rawData.length === 0) {
     return (
-      <div className="flex items-center justify-center h-[640px] text-slate-400">
+      <div className="flex items-center justify-center h-[420px] sm:h-[540px] lg:h-[640px] text-slate-400">
         데이터가 없습니다.
       </div>
     );
@@ -148,18 +176,32 @@ function MacroCandleChart({
     return { tenkan, kijun, spanA, spanB };
   });
 
-  // 4. 사용자가 조회하고자 하는 startDate 시점 이후 데이터만 시각적 렌더링용으로 슬라이싱
-  let startIndex = rawData.findIndex((d) => d.date >= startDate);
-  if (startIndex < 0) startIndex = 0;
+  // 4. 사용자가 조회하고자 하는 startDate 시점 이후 데이터만 기준 데이터로 슬라이싱
+  let baseStartIndex = rawData.findIndex((d) => d.date >= startDate);
+  if (baseStartIndex < 0) baseStartIndex = 0;
 
-  const data = rawData.slice(startIndex);
-  const ma5 = ma5Full.slice(startIndex);
-  const ma20 = ma20Full.slice(startIndex);
-  const ma60 = ma60Full.slice(startIndex);
-  const ma120 = ma120Full.slice(startIndex);
-  const ma200 = ma200Full.slice(startIndex);
-  const bbands = bbandsFull.slice(startIndex);
-  const ichimoku = ichimokuFull.slice(startIndex);
+  const baseData = rawData.slice(baseStartIndex);
+  const baseMA5 = ma5Full.slice(baseStartIndex);
+  const baseMA20 = ma20Full.slice(baseStartIndex);
+  const baseMA60 = ma60Full.slice(baseStartIndex);
+  const baseMA120 = ma120Full.slice(baseStartIndex);
+  const baseMA200 = ma200Full.slice(baseStartIndex);
+  const baseBbands = bbandsFull.slice(baseStartIndex);
+  const baseIchimoku = ichimokuFull.slice(baseStartIndex);
+
+  const totalCandles = baseData.length;
+  const effectiveStart = viewRange != null ? Math.max(0, Math.min(viewRange.start, Math.max(0, totalCandles - 5))) : 0;
+  const effectiveEnd = viewRange != null ? Math.min(totalCandles - 1, Math.max(viewRange.end, effectiveStart + 4)) : totalCandles - 1;
+  const isZoomed = viewRange != null && (effectiveStart > 0 || effectiveEnd < totalCandles - 1);
+
+  const data = baseData.slice(effectiveStart, effectiveEnd + 1);
+  const ma5 = baseMA5.slice(effectiveStart, effectiveEnd + 1);
+  const ma20 = baseMA20.slice(effectiveStart, effectiveEnd + 1);
+  const ma60 = baseMA60.slice(effectiveStart, effectiveEnd + 1);
+  const ma120 = baseMA120.slice(effectiveStart, effectiveEnd + 1);
+  const ma200 = baseMA200.slice(effectiveStart, effectiveEnd + 1);
+  const bbands = baseBbands.slice(effectiveStart, effectiveEnd + 1);
+  const ichimoku = baseIchimoku.slice(effectiveStart, effectiveEnd + 1);
 
   // Y축 Min/Max 범위 계산 (캔들 + 활성화된 보조지표 포함)
   let allMin = Math.min(...data.map((d) => d.low));
@@ -307,8 +349,79 @@ function MacroCandleChart({
     }
   }
 
-  // 차트 캔버스 마우스 이동 시 캔들 위치 동적 트래킹 (정밀 호버 감지)
+  const [isMouseDown, setIsMouseDown] = useState(false);
+  const mouseDragRef = useRef<{
+    startX: number;
+    initialStart: number;
+    initialEnd: number;
+    isDragging: boolean;
+  }>({
+    startX: 0,
+    initialStart: 0,
+    initialEnd: 0,
+    isDragging: false,
+  });
+
+  // 캔들 단위 좌우 패닝 헬퍼
+  const panByCandles = (deltaCandles: number) => {
+    const visibleCount = effectiveEnd - effectiveStart + 1;
+    let newStart = effectiveStart + deltaCandles;
+    let newEnd = effectiveEnd + deltaCandles;
+
+    if (newStart < 0) {
+      newStart = 0;
+      newEnd = Math.min(totalCandles - 1, newStart + visibleCount - 1);
+    }
+    if (newEnd >= totalCandles) {
+      newEnd = totalCandles - 1;
+      newStart = Math.max(0, newEnd - visibleCount + 1);
+    }
+    setViewRange({ start: newStart, end: newEnd });
+  };
+
+  // PC 마우스 드래그 시작 (좌우 이동)
+  const handleMouseDown = (e: React.MouseEvent<SVGSVGElement>) => {
+    if (e.button === 0) {
+      setIsMouseDown(true);
+      mouseDragRef.current = {
+        startX: e.clientX,
+        initialStart: effectiveStart,
+        initialEnd: effectiveEnd,
+        isDragging: false,
+      };
+    }
+  };
+
+  // 차트 캔버스 마우스 이동 (PC 드래그 패닝 & 실시간 호버 감지)
   const handleMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
+    if (isMouseDown && isZoomed) {
+      const deltaX = e.clientX - mouseDragRef.current.startX;
+      if (Math.abs(deltaX) > 2) {
+        mouseDragRef.current.isDragging = true;
+        const rect = e.currentTarget.getBoundingClientRect();
+        const visibleCount = mouseDragRef.current.initialEnd - mouseDragRef.current.initialStart + 1;
+        const deltaCandles = Math.round((-deltaX / rect.width) * visibleCount);
+
+        let newStart = mouseDragRef.current.initialStart + deltaCandles;
+        let newEnd = mouseDragRef.current.initialEnd + deltaCandles;
+
+        if (newStart < 0) {
+          newStart = 0;
+          newEnd = Math.min(totalCandles - 1, newStart + visibleCount - 1);
+        }
+        if (newEnd >= totalCandles) {
+          newEnd = totalCandles - 1;
+          newStart = Math.max(0, newEnd - visibleCount + 1);
+        }
+
+        setViewRange({ start: newStart, end: newEnd });
+        setHoverIndex(null);
+        return;
+      }
+    }
+
+    if (mouseDragRef.current.isDragging) return;
+
     const rect = e.currentTarget.getBoundingClientRect();
     if (!rect.width) return;
     const mouseX = e.clientX - rect.left;
@@ -323,6 +436,137 @@ function MacroCandleChart({
     const index = Math.floor((relX / usableWidth) * data.length);
     const clampedIndex = Math.max(0, Math.min(index, data.length - 1));
     setHoverIndex(clampedIndex);
+  };
+
+  const handleMouseUp = () => {
+    setIsMouseDown(false);
+    mouseDragRef.current.isDragging = false;
+  };
+
+  // 모바일 두 손가락 핀치 줌 & 패닝 터치 제스처 핸들러
+  const handleTouchStart = (e: React.TouchEvent<SVGSVGElement>) => {
+    if (e.touches.length === 2) {
+      // 핀치 줌 시작 (두 손가락)
+      const t1 = e.touches[0];
+      const t2 = e.touches[1];
+      const dist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+      touchRef.current = {
+        mode: 'pinch',
+        initialDistance: dist,
+        initialStart: effectiveStart,
+        initialEnd: effectiveEnd,
+        initialTouchX: (t1.clientX + t2.clientX) / 2,
+        hasMoved: false,
+      };
+      setHoverIndex(null);
+    } else if (e.touches.length === 1) {
+      // 한 손가락 패닝 시작 (이미 확대된 상태일 때만)
+      touchRef.current = {
+        mode: isZoomed ? 'pan' : 'none',
+        initialDistance: 0,
+        initialStart: effectiveStart,
+        initialEnd: effectiveEnd,
+        initialTouchX: e.touches[0].clientX,
+        hasMoved: false,
+      };
+    }
+  };
+
+  const handleTouchMove = (e: React.TouchEvent<SVGSVGElement>) => {
+    if (touchRef.current.mode === 'pinch' && e.touches.length === 2) {
+      const t1 = e.touches[0];
+      const t2 = e.touches[1];
+      const currentDist = Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+      if (currentDist < 5) return;
+
+      const scale = touchRef.current.initialDistance / currentDist;
+      const initialCount = touchRef.current.initialEnd - touchRef.current.initialStart + 1;
+      const newCount = Math.max(5, Math.min(totalCandles, Math.round(initialCount * scale)));
+
+      const center = (touchRef.current.initialStart + touchRef.current.initialEnd) / 2;
+      let newStart = Math.round(center - newCount / 2);
+      let newEnd = newStart + newCount - 1;
+
+      if (newStart < 0) {
+        newStart = 0;
+        newEnd = Math.min(totalCandles - 1, newStart + newCount - 1);
+      }
+      if (newEnd >= totalCandles) {
+        newEnd = totalCandles - 1;
+        newStart = Math.max(0, newEnd - newCount + 1);
+      }
+
+      touchRef.current.hasMoved = true;
+      setViewRange(newStart === 0 && newEnd === totalCandles - 1 ? null : { start: newStart, end: newEnd });
+      setHoverIndex(null);
+    } else if (touchRef.current.mode === 'pan' && e.touches.length === 1) {
+      const deltaX = e.touches[0].clientX - touchRef.current.initialTouchX;
+      if (Math.abs(deltaX) > 2) {
+        touchRef.current.hasMoved = true;
+        const rect = e.currentTarget.getBoundingClientRect();
+        const visibleCount = touchRef.current.initialEnd - touchRef.current.initialStart + 1;
+        const deltaCandles = Math.round((-deltaX / rect.width) * visibleCount);
+
+        let newStart = touchRef.current.initialStart + deltaCandles;
+        let newEnd = touchRef.current.initialEnd + deltaCandles;
+
+        if (newStart < 0) {
+          newStart = 0;
+          newEnd = Math.min(totalCandles - 1, newStart + visibleCount - 1);
+        }
+        if (newEnd >= totalCandles) {
+          newEnd = totalCandles - 1;
+          newStart = Math.max(0, newEnd - visibleCount + 1);
+        }
+
+        setViewRange({ start: newStart, end: newEnd });
+        setHoverIndex(null);
+      }
+    } else if (e.touches.length === 1 && !touchRef.current.hasMoved) {
+      // 터치 호버 트래킹
+      const touch = e.touches[0];
+      const rect = e.currentTarget.getBoundingClientRect();
+      const touchX = touch.clientX - rect.left;
+      const viewBoxX = (touchX / rect.width) * 1000;
+      if (viewBoxX >= paddingLeft && viewBoxX <= 1000 - paddingRight) {
+        const relX = viewBoxX - paddingLeft;
+        const index = Math.floor((relX / usableWidth) * data.length);
+        const clampedIndex = Math.max(0, Math.min(index, data.length - 1));
+        setHoverIndex(clampedIndex);
+      }
+    }
+  };
+
+  const handleTouchEnd = () => {
+    touchRef.current.mode = 'none';
+  };
+
+  // PC 마우스 휠 줌 핸들러
+  const handleWheel = (e: React.WheelEvent<SVGSVGElement>) => {
+    e.preventDefault();
+    const zoomFactor = e.deltaY > 0 ? 1.15 : 0.85;
+    const currentCount = effectiveEnd - effectiveStart + 1;
+    const newCount = Math.max(5, Math.min(totalCandles, Math.round(currentCount * zoomFactor)));
+
+    const rect = e.currentTarget.getBoundingClientRect();
+    const mouseX = e.clientX - rect.left;
+    const viewBoxX = (mouseX / rect.width) * 1000;
+    const ratio = Math.max(0, Math.min(1, (viewBoxX - paddingLeft) / usableWidth));
+    const center = effectiveStart + ratio * currentCount;
+
+    let newStart = Math.round(center - ratio * newCount);
+    let newEnd = newStart + newCount - 1;
+
+    if (newStart < 0) {
+      newStart = 0;
+      newEnd = Math.min(totalCandles - 1, newStart + newCount - 1);
+    }
+    if (newEnd >= totalCandles) {
+      newEnd = totalCandles - 1;
+      newStart = Math.max(0, newEnd - newCount + 1);
+    }
+
+    setViewRange(newStart === 0 && newEnd === totalCandles - 1 ? null : { start: newStart, end: newEnd });
   };
 
   // SVG 패스 생성 헬퍼
@@ -413,82 +657,234 @@ function MacroCandleChart({
 
   return (
     <div className="space-y-3">
-      {/* 보조지표 옵션 선택 패널 */}
-      <div className="flex flex-wrap items-center justify-between gap-3 p-3 bg-slate-950/90 rounded-xl border border-slate-800 text-xs">
-        <div className="flex flex-wrap items-center gap-3">
+      {/* 모바일 전용 보조지표 멀티 선택 드롭다운 (화면 < sm) */}
+      <div className="relative block sm:hidden">
+        <button
+          onClick={() => setIsIndicatorDropdownOpen(!isIndicatorDropdownOpen)}
+          className="w-full flex items-center justify-between px-3 py-2 rounded-xl bg-slate-950/90 border border-slate-800 text-xs font-semibold text-slate-200 hover:border-amber-500/50 shadow-md cursor-pointer"
+        >
+          <div className="flex items-center gap-1.5 truncate">
+            <TrendingUp className="w-4 h-4 text-amber-400 shrink-0" />
+            <span className="text-slate-400 font-medium">보조지표:</span>
+            <span className="text-amber-300 font-bold truncate">
+              {[
+                showMA && '이동평균선',
+                showBollinger && '볼린저',
+                showIchimoku && '일목',
+              ].filter(Boolean).join(', ') || '선택 없음'}
+            </span>
+          </div>
+          <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform duration-200 shrink-0 ml-1 ${isIndicatorDropdownOpen ? 'rotate-180 text-amber-400' : ''}`} />
+        </button>
+
+        {isIndicatorDropdownOpen && (
+          <>
+            {/* 투명 백드롭 오버레이 (바깥 클릭 시 닫힘) */}
+            <div
+              className="fixed inset-0 z-40"
+              onClick={() => setIsIndicatorDropdownOpen(false)}
+            />
+            {/* 드롭다운 메뉴 팝업 */}
+            <div className="absolute top-full left-0 right-0 mt-1.5 z-50 p-2 bg-slate-900 border border-slate-700/90 rounded-2xl shadow-2xl space-y-1.5 animate-fadeIn">
+              {/* 1. 이동평균선 */}
+              <div
+                onClick={() => setShowMA(!showMA)}
+                className={`flex items-center justify-between p-2.5 rounded-xl border transition cursor-pointer ${
+                  showMA
+                    ? 'bg-amber-500/10 border-amber-500/40 text-white'
+                    : 'bg-slate-950/60 border-slate-800 text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <div className={`w-4 h-4 rounded flex items-center justify-center border ${
+                    showMA ? 'bg-amber-500 border-amber-500 text-slate-950' : 'border-slate-600 bg-slate-800'
+                  }`}>
+                    {showMA && <Check className="w-3 h-3 stroke-[3]" />}
+                  </div>
+                  <span className="text-xs font-bold">이동평균선 (5/20/60/120/200)</span>
+                </div>
+                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                  기본
+                </span>
+              </div>
+
+              {/* 2. 볼린저 밴드 */}
+              <div
+                onClick={() => setShowBollinger(!showBollinger)}
+                className={`flex items-center justify-between p-2.5 rounded-xl border transition cursor-pointer ${
+                  showBollinger
+                    ? 'bg-cyan-500/10 border-cyan-500/40 text-white'
+                    : 'bg-slate-950/60 border-slate-800 text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <div className={`w-4 h-4 rounded flex items-center justify-center border ${
+                    showBollinger ? 'bg-cyan-500 border-cyan-500 text-slate-950' : 'border-slate-600 bg-slate-800'
+                  }`}>
+                    {showBollinger && <Check className="w-3 h-3 stroke-[3]" />}
+                  </div>
+                  <span className="text-xs font-bold">볼린저 밴드 (20, 2σ)</span>
+                </div>
+              </div>
+
+              {/* 3. 일목균형표 */}
+              <div
+                onClick={() => setShowIchimoku(!showIchimoku)}
+                className={`flex items-center justify-between p-2.5 rounded-xl border transition cursor-pointer ${
+                  showIchimoku
+                    ? 'bg-emerald-500/10 border-emerald-500/40 text-white'
+                    : 'bg-slate-950/60 border-slate-800 text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <div className={`w-4 h-4 rounded flex items-center justify-center border ${
+                    showIchimoku ? 'bg-emerald-500 border-emerald-500 text-slate-950' : 'border-slate-600 bg-slate-800'
+                  }`}>
+                    {showIchimoku && <Check className="w-3 h-3 stroke-[3]" />}
+                  </div>
+                  <span className="text-xs font-bold">일목균형표 (구름대)</span>
+                </div>
+              </div>
+
+              <button
+                onClick={() => setIsIndicatorDropdownOpen(false)}
+                className="w-full py-1.5 mt-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 font-bold text-xs transition cursor-pointer"
+              >
+                완료
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* PC 전용 보조지표 옵션 선택 패널 (화면 >= sm) */}
+      <div className="hidden sm:flex flex-wrap items-center justify-between gap-2 p-2 sm:px-3 bg-slate-950/90 rounded-xl border border-slate-800 text-xs">
+        <div className="flex flex-wrap items-center gap-2">
           <span className="text-slate-400 font-semibold flex items-center gap-1.5">
             <TrendingUp className="w-4 h-4 text-amber-400" /> 보조지표 옵션:
           </span>
 
           {/* 1. 이동평균선 (기본 ON) */}
-          <label className="flex items-center space-x-2 cursor-pointer bg-slate-900 px-3 py-1.5 rounded-lg border border-slate-700/80 hover:border-amber-500/50 transition">
+          <label className="flex items-center space-x-1.5 cursor-pointer bg-slate-900 px-2.5 py-1 rounded-lg border border-slate-700/80 hover:border-amber-500/50 transition">
             <input
               type="checkbox"
               checked={showMA}
               onChange={(e) => setShowMA(e.target.checked)}
               className="rounded text-amber-400 focus:ring-0 bg-slate-950 border-slate-700 cursor-pointer"
             />
-            <span className="font-bold text-slate-200">이동평균선 (5/20/60/120/200)</span>
-            <span className="text-[10px] text-amber-400 font-bold bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20">
+            <span className="font-bold text-slate-200 text-xs">이동평균선 (5/20/60/120/200)</span>
+            <span className="text-[9px] text-amber-400 font-bold bg-amber-500/10 px-1 py-0.2 rounded border border-amber-500/20">
               기본
             </span>
           </label>
 
           {/* 2. 볼린저 밴드 (옵션) */}
-          <label className="flex items-center space-x-2 cursor-pointer bg-slate-900 px-3 py-1.5 rounded-lg border border-slate-700/80 hover:border-cyan-500/50 transition">
+          <label className="flex items-center space-x-1.5 cursor-pointer bg-slate-900 px-2.5 py-1 rounded-lg border border-slate-700/80 hover:border-cyan-500/50 transition">
             <input
               type="checkbox"
               checked={showBollinger}
               onChange={(e) => setShowBollinger(e.target.checked)}
               className="rounded text-cyan-400 focus:ring-0 bg-slate-950 border-slate-700 cursor-pointer"
             />
-            <span className="font-bold text-slate-200">볼린저 밴드 (20, 2σ)</span>
+            <span className="font-bold text-slate-200 text-xs">볼린저 밴드 (20, 2σ)</span>
           </label>
 
           {/* 3. 일목균형표 (옵션) */}
-          <label className="flex items-center space-x-2 cursor-pointer bg-slate-900 px-3 py-1.5 rounded-lg border border-slate-700/80 hover:border-emerald-500/50 transition">
+          <label className="flex items-center space-x-1.5 cursor-pointer bg-slate-900 px-2.5 py-1 rounded-lg border border-slate-700/80 hover:border-emerald-500/50 transition">
             <input
               type="checkbox"
               checked={showIchimoku}
               onChange={(e) => setShowIchimoku(e.target.checked)}
               className="rounded text-emerald-400 focus:ring-0 bg-slate-950 border-slate-700 cursor-pointer"
             />
-            <span className="font-bold text-slate-200">일목균형표 (구름대)</span>
+            <span className="font-bold text-slate-200 text-xs">일목균형표 (구름대)</span>
           </label>
         </div>
 
         {/* 이평선 및 일목균형표 색상 범례 뱃지 */}
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-1.5">
           {showMA && (
-            <div className="flex items-center space-x-3 text-[11px] font-mono text-slate-300 bg-slate-900/80 px-2.5 py-1 rounded-lg border border-slate-800">
-              <span className="flex items-center gap-1.5"><span className="w-3 h-1 bg-[#F59E0B] rounded-full inline-block"></span>5선</span>
-              <span className="flex items-center gap-1.5"><span className="w-3 h-1 bg-[#06B6D4] rounded-full inline-block"></span>20선</span>
-              <span className="flex items-center gap-1.5"><span className="w-3 h-1 bg-[#10B981] rounded-full inline-block"></span>60선</span>
-              <span className="flex items-center gap-1.5"><span className="w-3 h-1 bg-[#8B5CF6] rounded-full inline-block"></span>120선</span>
-              <span className="flex items-center gap-1.5"><span className="w-3 h-1 bg-[#F43F5E] rounded-full inline-block"></span>200선</span>
+            <div className="flex items-center space-x-2.5 text-[10.5px] font-mono text-slate-300 bg-slate-900/80 px-2 py-0.5 rounded-lg border border-slate-800">
+              <span className="flex items-center gap-1"><span className="w-2.5 h-1 bg-[#F59E0B] rounded-full inline-block"></span>5선</span>
+              <span className="flex items-center gap-1"><span className="w-2.5 h-1 bg-[#06B6D4] rounded-full inline-block"></span>20선</span>
+              <span className="flex items-center gap-1"><span className="w-2.5 h-1 bg-[#10B981] rounded-full inline-block"></span>60선</span>
+              <span className="flex items-center gap-1"><span className="w-2.5 h-1 bg-[#8B5CF6] rounded-full inline-block"></span>120선</span>
+              <span className="flex items-center gap-1"><span className="w-2.5 h-1 bg-[#F43F5E] rounded-full inline-block"></span>200선</span>
             </div>
           )}
 
           {showIchimoku && (
-            <div className="flex items-center space-x-3 text-[11px] font-mono text-slate-300 bg-slate-900/80 px-2.5 py-1 rounded-lg border border-slate-800">
-              <span className="flex items-center gap-1.5"><span className="w-3 h-1 bg-[#3B82F6] rounded-full inline-block"></span>전환선(9)</span>
-              <span className="flex items-center gap-1.5"><span className="w-3 h-1 bg-[#F59E0B] rounded-full inline-block"></span>기준선(26)</span>
-              <span className="flex items-center gap-1.5"><span className="w-3 h-1 bg-[#10B981] rounded-full inline-block"></span>선행1</span>
-              <span className="flex items-center gap-1.5"><span className="w-3 h-1 bg-[#F43F5E] rounded-full inline-block"></span>선행2</span>
-              <span className="flex items-center gap-1.5"><span className="w-3 h-2 bg-emerald-500/30 border border-emerald-500/50 rounded inline-block"></span>양구름</span>
-              <span className="flex items-center gap-1.5"><span className="w-3 h-2 bg-rose-500/30 border border-rose-500/50 rounded inline-block"></span>음구름</span>
+            <div className="flex items-center space-x-2 text-[10.5px] font-mono text-slate-300 bg-slate-900/80 px-2 py-0.5 rounded-lg border border-slate-800">
+              <span className="flex items-center gap-1"><span className="w-2.5 h-1 bg-[#3B82F6] rounded-full inline-block"></span>전환선(9)</span>
+              <span className="flex items-center gap-1"><span className="w-2.5 h-1 bg-[#F59E0B] rounded-full inline-block"></span>기준선(26)</span>
+              <span className="flex items-center gap-1"><span className="w-2.5 h-1 bg-[#10B981] rounded-full inline-block"></span>선행1</span>
+              <span className="flex items-center gap-1"><span className="w-2.5 h-1 bg-[#F43F5E] rounded-full inline-block"></span>선행2</span>
+              <span className="flex items-center gap-1"><span className="w-2.5 h-1.5 bg-emerald-500/30 border border-emerald-500/50 rounded inline-block"></span>양구름</span>
+              <span className="flex items-center gap-1"><span className="w-2.5 h-1.5 bg-rose-500/30 border border-rose-500/50 rounded inline-block"></span>음구름</span>
             </div>
           )}
         </div>
       </div>
 
-      <div className="relative w-full h-[640px] select-none font-sans bg-slate-950/40 rounded-xl p-2 border border-slate-800/80">
+      <div className="relative w-full h-[380px] sm:h-[540px] lg:h-[580px] xl:h-[620px] select-none font-sans bg-slate-950/40 rounded-xl p-2 border border-slate-800/80 overflow-hidden">
+        {/* 줌 상태일 때 나타나는 컨트롤 바 (좌우 이동 버튼 + 현재 위치 + 100% 리셋 버튼, 20% 투명도 = 80% 가시성) */}
+        {isZoomed && (
+          <div className="absolute top-2 right-2 z-30 flex items-center gap-1 p-0.5 sm:p-1 bg-slate-900/80 opacity-80 hover:opacity-100 border border-amber-500/30 rounded-lg shadow-xl backdrop-blur-md animate-fadeIn text-[10px] sm:text-xs transition-opacity">
+            <button
+              onClick={() => panByCandles(-Math.max(1, Math.round((effectiveEnd - effectiveStart) * 0.25)))}
+              disabled={effectiveStart <= 0}
+              className={`p-1 rounded-md border transition ${
+                effectiveStart <= 0
+                  ? 'opacity-30 border-slate-800 text-slate-600 cursor-not-allowed'
+                  : 'bg-slate-800/90 hover:bg-slate-700 text-amber-300 border-slate-700 cursor-pointer active:scale-95'
+              }`}
+              title="과거(좌측)로 이동"
+            >
+              <ChevronLeft className="w-3.5 h-3.5" />
+            </button>
+            <span className="text-[9px] sm:text-[10px] font-mono text-slate-300 px-0.5 font-semibold hidden xs:inline">
+              {Math.round(((effectiveStart + 1) / totalCandles) * 100)}% ~ {Math.round(((effectiveEnd + 1) / totalCandles) * 100)}%
+            </span>
+            <button
+              onClick={() => panByCandles(Math.max(1, Math.round((effectiveEnd - effectiveStart) * 0.25)))}
+              disabled={effectiveEnd >= totalCandles - 1}
+              className={`p-1 rounded-md border transition ${
+                effectiveEnd >= totalCandles - 1
+                  ? 'opacity-30 border-slate-800 text-slate-600 cursor-not-allowed'
+                  : 'bg-slate-800/90 hover:bg-slate-700 text-amber-300 border-slate-700 cursor-pointer active:scale-95'
+              }`}
+              title="최근(우측)으로 이동"
+            >
+              <ChevronRight className="w-3.5 h-3.5" />
+            </button>
+            <button
+              onClick={() => setViewRange(null)}
+              className="flex items-center gap-0.5 px-1.5 sm:px-2 py-0.5 sm:py-0.5 rounded-md bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-[10px] sm:text-[11px] transition active:scale-95 cursor-pointer ml-0.5"
+              title="원래 전체 보기로 복귀"
+            >
+              <RefreshCw className="w-2.5 h-2.5 sm:w-3 sm:h-3" />
+              <span>원래대로</span>
+            </button>
+          </div>
+        )}
+
         <svg
-          className="w-full h-full"
+          className="w-full h-full touch-none select-none"
+          style={{ cursor: isZoomed ? (isMouseDown ? 'grabbing' : 'grab') : 'crosshair' }}
           viewBox={`0 0 1000 ${chartHeight}`}
           preserveAspectRatio="none"
+          onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
-          onMouseLeave={() => setHoverIndex(null)}
+          onMouseUp={handleMouseUp}
+          onMouseLeave={() => {
+            handleMouseUp();
+            setHoverIndex(null);
+          }}
+          onTouchStart={handleTouchStart}
+          onTouchMove={handleTouchMove}
+          onTouchEnd={handleTouchEnd}
+          onTouchCancel={handleTouchEnd}
+          onWheel={handleWheel}
         >
           {/* 우측 Y축 그리드선 및 딱 떨어지는 10^n 수치 라벨 */}
           {yTicks.map((tick, i) => (
@@ -881,6 +1277,29 @@ function MacroCandleChart({
           );
         })()}
       </div>
+
+      {/* 모바일 전용 그래프 하단 미니 범례 (5선, 20선 등 - 화면 < sm) */}
+      {(showMA || showIchimoku) && (
+        <div className="flex sm:hidden flex-wrap items-center justify-center gap-x-2 gap-y-1 pt-1 text-[10px] font-mono text-slate-400">
+          {showMA && (
+            <div className="flex items-center gap-2 bg-slate-950/80 px-2 py-0.5 rounded-lg border border-slate-800/80 shadow-sm">
+              <span className="flex items-center gap-1"><span className="w-2 h-1 bg-[#F59E0B] rounded-full inline-block"></span>5선</span>
+              <span className="flex items-center gap-1"><span className="w-2 h-1 bg-[#06B6D4] rounded-full inline-block"></span>20선</span>
+              <span className="flex items-center gap-1"><span className="w-2 h-1 bg-[#10B981] rounded-full inline-block"></span>60선</span>
+              <span className="flex items-center gap-1"><span className="w-2 h-1 bg-[#8B5CF6] rounded-full inline-block"></span>120선</span>
+              <span className="flex items-center gap-1"><span className="w-2 h-1 bg-[#F43F5E] rounded-full inline-block"></span>200선</span>
+            </div>
+          )}
+          {showIchimoku && (
+            <div className="flex items-center gap-1.5 bg-slate-950/80 px-2 py-0.5 rounded-lg border border-slate-800/80 shadow-sm">
+              <span className="flex items-center gap-1"><span className="w-2 h-1 bg-[#3B82F6] rounded-full inline-block"></span>전환(9)</span>
+              <span className="flex items-center gap-1"><span className="w-2 h-1 bg-[#F59E0B] rounded-full inline-block"></span>기준(26)</span>
+              <span className="flex items-center gap-1"><span className="w-2 h-1 bg-[#10B981] rounded-full inline-block"></span>선행1</span>
+              <span className="flex items-center gap-1"><span className="w-2 h-1 bg-[#F43F5E] rounded-full inline-block"></span>선행2</span>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -944,6 +1363,8 @@ export function App() {
   const [activeCategory, setActiveCategory] = useState<string>(
     () => localStorage.getItem('activeCategory') || 'INVESTOR'
   );
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState<boolean>(false);
+  const [isMobileDateModalOpen, setIsMobileDateModalOpen] = useState<boolean>(false);
   const [activeItemCode, setActiveItemCode] = useState<string>(
     () => localStorage.getItem('activeItemCode') || 'FOREIGNER_2Y_CUM'
   );
@@ -1084,6 +1505,33 @@ export function App() {
       return `${sign}${(absVal / 1e4).toLocaleString()} 만원`;
     }
     return `${sign}${val.toLocaleString()}원`;
+  };
+
+  // 주체별 순매수 상세표 전용 포맷터: 억원 단위는 천만원 단위에서 반올림하여 정수 억원으로 표기
+  const formatTableCurrency = (val: number): string => {
+    if (val === 0 || val === undefined || val === null) return '0원';
+    const absVal = Math.abs(val);
+    const sign = val < 0 ? '-' : '';
+
+    if (absVal >= 1e12) {
+      return `${sign}${(absVal / 1e12).toFixed(2)} 조원`;
+    } else if (absVal >= 1e8) {
+      const eok = Math.round(absVal / 1e8);
+      return `${sign}${eok.toLocaleString()} 억원`;
+    } else if (absVal >= 1e4) {
+      return `${sign}${Math.round(absVal / 1e4).toLocaleString()} 만원`;
+    }
+    return `${sign}${Math.round(absVal).toLocaleString()}원`;
+  };
+
+  // 주체별 순매수 상세표 전용 날짜 포맷터 (YYYYMMDD / YYYY-MM-DD -> YY.MM.DD)
+  const formatTableDate = (dt: string | undefined): string => {
+    if (!dt) return '-';
+    const clean = dt.replace(/-/g, '');
+    if (clean.length === 8) {
+      return `${clean.slice(2, 4)}.${clean.slice(4, 6)}.${clean.slice(6, 8)}`;
+    }
+    return dt;
   };
 
   // Fetch data based on activeCategory and activeItemCode
@@ -1252,35 +1700,42 @@ export function App() {
 
   return (
     <div className="min-h-screen bg-[#0B0F19] text-gray-100 flex flex-col font-sans">
-      {/* 상단 R's Indicator Tracker 로고 헤더 (라이트/다크 테마 토글 연동) */}
-      <Header theme={theme} onToggleTheme={toggleTheme} />
+      {/* 상단 R's Indicator Tracker 로고 헤더 (모바일 햄버거 메뉴 연동) */}
+      <Header
+        onToggleMobileMenu={() => setIsMobileMenuOpen((prev) => !prev)}
+        isMobileMenuOpen={isMobileMenuOpen}
+      />
 
       {/* 전체 페이지 레이아웃 */}
       <div className="flex flex-1">
-        {/* 좌측 사이드바 메뉴 */}
+        {/* 좌측 사이드바 메뉴 (PC 고정 / 모바일 슬라이드 드로어, 하단 테마 스위치 탑재) */}
         <Sidebar
           activeCategory={activeCategory}
           activeItemCode={activeItemCode}
           onSelectMenuItem={handleSelectMenuItem}
+          isMobileOpen={isMobileMenuOpen}
+          onCloseMobile={() => setIsMobileMenuOpen(false)}
+          theme={theme}
+          onToggleTheme={toggleTheme}
         />
 
-        {/* 우측 메인 컨텐츠 영역 */}
-        <main className="flex-1 flex flex-col p-6 overflow-y-auto">
+        {/* 우측 메인 컨텐츠 영역 (모바일에서는 하단 퀵 네비게이션 공간 확보 pb-24) */}
+        <main className="flex-1 flex flex-col p-2.5 sm:p-4 lg:p-4 overflow-y-auto pb-24 lg:pb-4">
           {activeCategory === 'HOME' ? (
             /* HOME 탭 */
-            <div className="flex-1 flex flex-col items-center justify-center relative min-h-[500px]">
-              <div className="absolute w-[450px] h-[450px] bg-gradient-to-tr from-rose-500/20 via-amber-500/20 to-indigo-600/20 rounded-full blur-3xl -z-10 pointer-events-none animate-pulse"></div>
+            <div className="flex-1 flex flex-col items-center justify-center relative min-h-[450px] sm:min-h-[500px]">
+              <div className="absolute w-[300px] sm:w-[450px] h-[300px] sm:h-[450px] bg-gradient-to-tr from-rose-500/20 via-amber-500/20 to-indigo-600/20 rounded-full blur-3xl -z-10 pointer-events-none animate-pulse"></div>
 
-              <div className="glass-card max-w-lg w-full p-10 rounded-3xl border border-slate-800 text-center shadow-2xl space-y-8">
-                <div className="mx-auto w-16 h-16 rounded-2xl bg-gradient-to-tr from-amber-500 via-rose-500 to-indigo-600 flex items-center justify-center shadow-lg shadow-rose-500/30">
-                  <TrendingUp className="w-9 h-9 text-white" />
+              <div className="glass-card max-w-lg w-full p-6 sm:p-10 rounded-3xl border border-slate-800 text-center shadow-2xl space-y-6 sm:space-y-8">
+                <div className="mx-auto w-14 h-14 sm:w-16 sm:h-16 rounded-2xl bg-gradient-to-tr from-amber-500 via-rose-500 to-indigo-600 flex items-center justify-center shadow-lg shadow-rose-500/30">
+                  <TrendingUp className="w-8 h-8 sm:w-9 sm:h-9 text-white" />
                 </div>
 
-                <div className="space-y-3">
-                  <h1 className="text-4xl font-extrabold text-white tracking-tight font-outfit">
+                <div className="space-y-2 sm:space-y-3">
+                  <h1 className="text-2xl sm:text-4xl font-extrabold text-white tracking-tight font-outfit">
                     지표추적자 (HOME)
                   </h1>
-                  <p className="text-slate-400 text-sm leading-relaxed">
+                  <p className="text-slate-400 text-xs sm:text-sm leading-relaxed">
                     주체별 수급 현황, 4대 시장 지수, 거시경제 금리 및 관심 종목을 실시간으로 추적합니다.
                   </p>
                 </div>
@@ -1288,7 +1743,7 @@ export function App() {
                 <div>
                   <button
                     onClick={() => handleSelectMenuItem('INVESTOR', 'FOREIGNER_2Y_CUM', 'FOREIGNER')}
-                    className="w-full py-4 px-6 bg-gradient-to-r from-amber-500 via-rose-500 to-indigo-600 text-white font-bold text-base rounded-2xl shadow-xl shadow-rose-500/20 hover:opacity-95 hover:scale-[1.02] active:scale-[0.98] transition duration-200"
+                    className="w-full py-3.5 sm:py-4 px-6 bg-gradient-to-r from-amber-500 via-rose-500 to-indigo-600 text-white font-bold text-sm sm:text-base rounded-2xl shadow-xl shadow-rose-500/20 hover:opacity-95 hover:scale-[1.02] active:scale-[0.98] transition duration-200 cursor-pointer"
                   >
                     시작하기 (1번 외국인 2년 누적 이동)
                   </button>
@@ -1296,30 +1751,31 @@ export function App() {
               </div>
             </div>
           ) : (
-            /* 지표 분석 대시보드 화면 (가로 폭 20% 확대 max-w-[1536px] & 박스 상단 밀착, 화살표 차트 중앙 라인 정렬) */
-            <div className="flex items-start justify-center gap-4 w-full max-w-[1536px] mx-auto">
-              {/* 좌측 이전 커서 버튼 전용 고정 슬롯 (차트 그래프 박스 중앙 위치 정렬 mt-[390px]) */}
-              <div className="w-12 shrink-0 mt-[390px] flex justify-center z-20">
+            /* 지표 분석 대시보드 화면 */
+            <div className="flex items-start justify-center gap-2 lg:gap-3 w-full max-w-[1536px] mx-auto">
+              {/* 좌측 이전 커서 버튼 전용 고정 슬롯 (PC 화면 전용 hidden lg:flex) */}
+              <div className="hidden lg:flex w-10 shrink-0 mt-[260px] justify-center z-20">
                 {hasPrev ? (
                   <button
                     onClick={() => prevItem && handleSelectMenuItem(prevItem.categoryCode, prevItem.itemCode, prevItem.symbol)}
-                    className="w-12 h-12 rounded-2xl bg-slate-900/90 hover:bg-amber-500/20 hover:border-amber-500/50 border border-slate-700/80 text-slate-300 hover:text-amber-300 shadow-2xl backdrop-blur-md transition-all duration-200 hover:scale-110 active:scale-95 flex items-center justify-center cursor-pointer z-10"
+                    className="w-10 h-10 rounded-xl bg-slate-900/90 hover:bg-amber-500/20 hover:border-amber-500/50 border border-slate-700/80 text-slate-300 hover:text-amber-300 shadow-2xl backdrop-blur-md transition-all duration-200 hover:scale-110 active:scale-95 flex items-center justify-center cursor-pointer z-10"
                     title={`이전 지표: ${prevItem?.title}`}
                   >
-                    <ChevronLeft className="w-6 h-6 text-amber-400" />
+                    <ChevronLeft className="w-5 h-5 text-amber-400" />
                   </button>
                 ) : null}
               </div>
 
-              <div className="space-y-6 flex-1 min-w-0">
-              {/* Top Controls Bar */}
-              <div className="flex items-center justify-between bg-slate-900/90 p-4 rounded-2xl border border-slate-700/80 shadow-xl shadow-slate-950/40">
-                <div className="flex items-center space-x-3 text-sm font-semibold text-white">
-                  {activeCategory === 'INVESTOR' && <Briefcase className="w-5 h-5 text-rose-400" />}
-                  {activeCategory === 'MARKET' && <Activity className="w-5 h-5 text-amber-400" />}
-                  {activeCategory === 'MACRO' && <Globe className="w-5 h-5 text-emerald-400" />}
-                  {activeCategory === 'STOCK' && <Layers className="w-5 h-5 text-indigo-400" />}
-                  <span className="font-outfit">
+              <div className="space-y-2.5 sm:space-y-3 lg:space-y-2.5 flex-1 min-w-0">
+              {/* Top Controls Bar: PC 가로 1단 유지, 모바일은 1줄 초슬림 바 + 날짜 변경 팝업 모달 */}
+              <div className="bg-slate-900/90 p-2.5 sm:py-2 sm:px-3.5 rounded-xl border border-slate-700/80 shadow-xl shadow-slate-950/40 flex items-center justify-between gap-2 sm:gap-3">
+                {/* 지표 타이틀 */}
+                <div className="flex items-center space-x-2 sm:space-x-3 text-xs sm:text-sm font-semibold text-white min-w-0">
+                  {activeCategory === 'INVESTOR' && <Briefcase className="w-4 h-4 sm:w-5 sm:h-5 text-rose-400 shrink-0" />}
+                  {activeCategory === 'MARKET' && <Activity className="w-4 h-4 sm:w-5 sm:h-5 text-amber-400 shrink-0" />}
+                  {activeCategory === 'MACRO' && <Globe className="w-4 h-4 sm:w-5 sm:h-5 text-emerald-400 shrink-0" />}
+                  {activeCategory === 'STOCK' && <Layers className="w-4 h-4 sm:w-5 sm:h-5 text-indigo-400 shrink-0" />}
+                  <span className="font-outfit truncate">
                     {activeItemCode === 'FOREIGNER_2Y_CUM' && '수급 분석 > 1. 외국인 2년 누적 (주봉 고정)'}
                     {activeItemCode === 'MAIN_3SUB_CUM' && '수급 분석 > 2. 외국인, 개인, 기관, 연기금 누적 (주봉 고정)'}
                     {activeItemCode === 'INVESTOR_NET' && '수급 분석 > 3. 주체별 순매수'}
@@ -1329,8 +1785,61 @@ export function App() {
                   </span>
                 </div>
 
-                <div className="flex items-center space-x-4">
-                  {/* 달력 조회 기간 피커 & 원터치 퀵 기간 선택 버튼 (1달, 3달, 6달, 1년, 2년) */}
+                {/* 모바일 화면 전용 컨트롤 영역 (화면 < xl): [날짜 변경 버튼] + [일봉/주봉] + [새로고침] */}
+                <div className="flex xl:hidden items-center space-x-1.5 sm:space-x-2 shrink-0">
+                  {isFixedWeekly ? (
+                    <div className="px-2.5 py-1 rounded-xl bg-slate-950/80 border border-amber-500/30 text-amber-400 text-[11px] font-bold shadow-inner">
+                      2년 고정
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => setIsMobileDateModalOpen(true)}
+                      className="flex items-center space-x-1 px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 text-xs font-bold transition active:scale-95 cursor-pointer shadow-sm"
+                      title="조회 날짜 변경"
+                    >
+                      <Calendar className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                      <span className="text-[11px] sm:text-xs">날짜 변경</span>
+                    </button>
+                  )}
+
+                  {/* 일봉/주봉 스위치 */}
+                  {isFixedWeekly ? (
+                    <div className="px-2.5 py-1 rounded-xl bg-slate-950/80 border border-amber-500/30 text-amber-400 text-[11px] font-bold shadow-inner">
+                      주봉 고정
+                    </div>
+                  ) : (
+                    <div
+                      onClick={() => setPeriodType((prev) => (prev === 'D' ? 'W' : 'D'))}
+                      className="w-22 sm:w-24 h-7.5 sm:h-8 rounded-full bg-slate-950 border border-slate-700/80 p-0.5 flex items-center justify-between relative cursor-pointer select-none shadow-inner"
+                      title="클릭하여 일봉/주봉 스위치 전환"
+                    >
+                      <span className={`text-[10px] sm:text-[11px] font-bold z-10 w-10 sm:w-11 text-center transition ${periodType === 'D' ? 'text-slate-950 font-extrabold' : 'text-slate-400'}`}>
+                        일봉
+                      </span>
+                      <span className={`text-[10px] sm:text-[11px] font-bold z-10 w-10 sm:w-11 text-center transition ${periodType === 'W' ? 'text-slate-950 font-extrabold' : 'text-slate-400'}`}>
+                        주봉
+                      </span>
+                      <div
+                        className={`absolute h-6 sm:h-6.5 w-10 sm:w-11 rounded-full bg-gradient-to-r from-amber-500 to-amber-600 shadow-md transition-all duration-300 ease-in-out ${
+                          periodType === 'D' ? 'left-0.5' : 'left-[42px] sm:left-[47px]'
+                        }`}
+                      ></div>
+                    </div>
+                  )}
+
+                  {/* 새로고침 */}
+                  <button
+                    onClick={fetchData}
+                    className="p-1.5 sm:p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-xl transition border border-slate-800 cursor-pointer"
+                    title="새로고침"
+                  >
+                    <RefreshCw className={`w-3.5 h-3.5 sm:w-4 sm:h-4 ${loading ? 'animate-spin text-amber-400' : ''}`} />
+                  </button>
+                </div>
+
+                {/* PC 데스크탑 전용 컨트롤 영역 (화면 >= xl): 기존 날짜 피커 + 프리셋 + 일봉/주봉 + 새로고침 1단 가로 정렬 */}
+                <div className="hidden xl:flex items-center space-x-4">
+                  {/* 달력 조회 기간 피커 & 원터치 퀵 기간 선택 버튼 */}
                   <div className="flex items-center space-x-2 text-xs text-slate-400 bg-slate-950/90 px-3 py-1.5 rounded-xl border border-slate-800">
                     <Calendar className="w-4 h-4 text-amber-400 shrink-0" />
                     <span className="font-medium">기간:</span>
@@ -1358,7 +1867,7 @@ export function App() {
                         2년 고정
                       </span>
                     ) : (
-                      /* 원터치 퀵 기간 선택 버튼 그룹 (주체별 순매수는 1일/3일/7일/1달, 그 외 1달/3달/6달/1년/2년) */
+                      /* 원터치 퀵 기간 선택 버튼 그룹 */
                       <div className="flex items-center space-x-1 pl-2 border-l border-slate-800 ml-1">
                         {(activeItemCode === 'INVESTOR_NET'
                           ? [
@@ -1397,7 +1906,7 @@ export function App() {
                     )}
                   </div>
 
-                  {/* 모던 슬라이딩 On/Off 스타일 일/주봉 스위치 */}
+                  {/* 모던 슬라이딩 일/주봉 스위치 */}
                   {isFixedWeekly ? (
                     <div className="px-4 py-2 rounded-full bg-slate-950/90 border border-amber-500/40 text-amber-400 text-xs font-bold shadow-inner flex items-center gap-1.5">
                       <span>주봉 고정</span>
@@ -1424,13 +1933,107 @@ export function App() {
 
                   <button
                     onClick={fetchData}
-                    className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-xl transition border border-slate-800"
+                    className="p-2 text-slate-400 hover:text-white hover:bg-slate-800 rounded-xl transition border border-slate-800 cursor-pointer"
                     title="새로고침"
                   >
                     <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin text-amber-400' : ''}`} />
                   </button>
                 </div>
               </div>
+
+              {/* 모바일 전용 날짜 변경 팝업 모달 (화면 < xl) - 화면 정중앙 배치 */}
+              {isMobileDateModalOpen && !isFixedWeekly && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/80 backdrop-blur-sm p-4 animate-fadeIn">
+                  <div className="bg-slate-900 border border-slate-700 rounded-3xl p-5 max-w-sm w-full shadow-2xl space-y-4 relative">
+                    {/* 모달 헤더 */}
+                    <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                      <div className="flex items-center space-x-2 text-sm font-bold text-white">
+                        <Calendar className="w-4 h-4 text-amber-400" />
+                        <span>조회 날짜 변경</span>
+                      </div>
+                      <button
+                        onClick={() => setIsMobileDateModalOpen(false)}
+                        className="p-1.5 rounded-full hover:bg-slate-800 text-slate-400 hover:text-white transition cursor-pointer"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+
+                    {/* 직접 날짜 선택 */}
+                    <div className="space-y-1.5">
+                      <label className="text-xs text-slate-400 font-medium">직접 날짜 지정</label>
+                      <div className="flex items-center space-x-1.5 bg-slate-950 p-2 rounded-xl border border-slate-800">
+                        <input
+                          type="date"
+                          value={toInputDate(startDate)}
+                          onChange={(e) => setStartDate(toApiDate(e.target.value))}
+                          className="bg-slate-900 text-slate-100 text-xs px-2 py-1.5 rounded-lg border border-slate-700 font-mono focus:outline-none focus:border-amber-400 flex-1 text-center cursor-pointer"
+                        />
+                        <span className="text-slate-500 font-bold">~</span>
+                        <input
+                          type="date"
+                          value={toInputDate(endDate)}
+                          onChange={(e) => setEndDate(toApiDate(e.target.value))}
+                          className="bg-slate-900 text-slate-100 text-xs px-2 py-1.5 rounded-lg border border-slate-700 font-mono focus:outline-none focus:border-amber-400 flex-1 text-center cursor-pointer"
+                        />
+                      </div>
+                    </div>
+
+                    {/* 빠른 기간 프리셋 선택 */}
+                    <div className="space-y-1.5">
+                      <label className="text-xs text-slate-400 font-medium">빠른 기간 선택</label>
+                      <div className="grid grid-cols-4 sm:grid-cols-5 gap-1.5">
+                        {(activeItemCode === 'INVESTOR_NET'
+                          ? [
+                              { label: '1일', amount: 1, unit: 'day' },
+                              { label: '3일', amount: 3, unit: 'day' },
+                              { label: '7일', amount: 7, unit: 'day' },
+                              { label: '1달', amount: 1, unit: 'month' },
+                            ]
+                          : [
+                              { label: '1달', amount: 1, unit: 'month' },
+                              { label: '3달', amount: 3, unit: 'month' },
+                              { label: '6달', amount: 6, unit: 'month' },
+                              { label: '1년', amount: 1, unit: 'year' },
+                              { label: '2년', amount: 2, unit: 'year' },
+                            ]
+                        ).map((preset) => {
+                          const targetStart = dayjs().subtract(preset.amount, preset.unit as any).format('YYYYMMDD');
+                          const todayEnd = dayjs().format('YYYYMMDD');
+                          const isActive = startDate === targetStart && endDate === todayEnd;
+
+                          return (
+                            <button
+                              key={preset.label}
+                              onClick={() => {
+                                handleQuickPeriodSelect(preset.amount, preset.unit as any);
+                              }}
+                              className={`py-2 rounded-xl text-xs font-bold transition text-center cursor-pointer ${
+                                isActive
+                                  ? 'bg-amber-500 text-slate-950 font-extrabold shadow-sm'
+                                  : 'bg-slate-950 text-slate-300 hover:bg-slate-800 border border-slate-800'
+                              }`}
+                            >
+                              {preset.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* 적용 및 닫기 버튼 */}
+                    <button
+                      onClick={() => {
+                        setIsMobileDateModalOpen(false);
+                        fetchData();
+                      }}
+                      className="w-full py-2.5 rounded-xl bg-gradient-to-r from-amber-500 to-amber-600 text-slate-950 font-bold text-xs shadow-lg shadow-amber-500/20 active:scale-98 transition cursor-pointer"
+                    >
+                      적용하기
+                    </button>
+                  </div>
+                </div>
+              )}
 
               {loading ? (
                 <div className="flex flex-col items-center justify-center py-20 text-slate-400">
@@ -1441,29 +2044,24 @@ export function App() {
                 <>
                   {/* 1. 수급 분석: 1. 외국인 2년 누적 (주봉 고정, 0 기준선 추가, 상시 최신 데이터 카드) */}
                   {activeCategory === 'INVESTOR' && activeItemCode === 'FOREIGNER_2Y_CUM' && (
-                    <div className="bg-slate-900/90 rounded-2xl p-6 border border-slate-700/80 shadow-xl shadow-slate-950/60 space-y-4">
-                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                        <div>
-                          <div className="flex flex-wrap items-center gap-3">
-                            <h3 className="text-base font-bold text-white flex items-center gap-2">
-                              <Briefcase className="w-5 h-5 text-rose-400" />
-                              1. 외국인 2년 누적 순매수 추이 (KOSPI - 주봉 고정)
-                            </h3>
-                            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-500/10 light:bg-amber-500/15 text-amber-300 light:text-amber-800 border border-amber-500/20 light:border-amber-500/40 shadow-sm">
-                              <span className="relative flex h-2 w-2">
-                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-                              </span>
-                              <span>Sync: {getSyncBadgeText(activeCategory, activeItemCode)}</span>
-                            </div>
+                    <div className="bg-slate-900/90 rounded-2xl p-2.5 sm:p-4 lg:p-4 border border-slate-700/80 shadow-xl shadow-slate-950/60 space-y-2 sm:space-y-2.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center space-x-2 min-w-0">
+                          <h3 className="text-xs sm:text-base font-bold text-white flex items-center gap-1.5 truncate">
+                            <Briefcase className="w-4 h-4 sm:w-5 sm:h-5 text-rose-400 shrink-0" />
+                            <span className="truncate">외국인 2년 누적 순매수 (주봉 고정)</span>
+                          </h3>
+                          <div className="hidden xs:inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] sm:text-xs font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/20 shadow-sm shrink-0">
+                            <span className="relative flex h-1.5 w-1.5">
+                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                              <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500"></span>
+                            </span>
+                            <span>{getSyncBadgeText(activeCategory, activeItemCode)}</span>
                           </div>
-                          <p className="text-xs text-slate-400 mt-1">
-                            2년 전 첫 거래일(cum_net = 0) 기준 주봉 외국인 누적 수급 데이터입니다.
-                          </p>
                         </div>
                       </div>
 
-                      {/* 상시 최신 외국인 2년 누적 데이터 요약 카드 (전일, 오늘 누적 수급 및 변동폭 표출) */}
+                      {/* 상시 최신 외국인 2년 누적 데이터 요약 카드 (모바일 3열 콤팩트 배치) */}
                       {cumInvestorData.length > 0 && (() => {
                         const latest = cumInvestorData[cumInvestorData.length - 1];
                         const prev = cumInvestorData.length > 1 ? cumInvestorData[cumInvestorData.length - 2] : null;
@@ -1474,49 +2072,46 @@ export function App() {
                         const isPos = diff >= 0;
 
                         return (
-                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-4 bg-slate-950/80 rounded-xl border border-slate-800 font-sans">
+                          <div className="grid grid-cols-3 gap-1.5 sm:gap-2.5 p-1.5 sm:p-2 sm:py-1.5 bg-slate-950/80 rounded-xl border border-slate-800 font-sans">
                             {/* 전일 누적 */}
-                            <div className="bg-slate-900/90 p-3 rounded-lg border border-slate-800/80 flex flex-col justify-between">
-                              <span className="text-[11px] text-slate-400 font-semibold flex items-center justify-between">
-                                <span>전일 누적 수급</span>
-                                <span className="font-mono text-[10px] text-slate-500">{prev ? prev.dt : '-'}</span>
+                            <div className="bg-slate-900/90 py-1 px-2 sm:py-1.5 sm:px-2.5 rounded-lg border border-slate-800/80 flex flex-col justify-between min-w-0">
+                              <span className="text-[10px] sm:text-[11px] text-slate-400 font-semibold flex items-center justify-between">
+                                <span className="truncate">전일</span>
+                                <span className="font-mono text-[9px] sm:text-[10px] text-slate-500 hidden xs:inline">{prev ? prev.dt : '-'}</span>
                               </span>
-                              <span className={`text-base sm:text-lg font-bold font-outfit mt-1 ${prevVal >= 0 ? 'text-amber-400' : 'text-blue-400'}`}>
+                              <span className={`text-xs sm:text-sm font-bold font-outfit mt-0.5 truncate ${prevVal >= 0 ? 'text-amber-400' : 'text-blue-400'}`}>
                                 {formatTooltipCurrency(prevVal)}
                               </span>
                             </div>
 
                             {/* 오늘 / 최근 누적 */}
-                            <div className="bg-slate-900/90 p-3 rounded-lg border border-slate-800/80 flex flex-col justify-between">
-                              <span className="text-[11px] text-slate-400 font-semibold flex items-center justify-between">
-                                <span>오늘 / 최근 누적 수급</span>
-                                <span className="font-mono text-[10px] text-amber-300 font-bold bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20">{formatUpdateTime(latest)}</span>
+                            <div className="bg-slate-900/90 py-1 px-2 sm:py-1.5 sm:px-2.5 rounded-lg border border-slate-800/80 flex flex-col justify-between min-w-0">
+                              <span className="text-[10px] sm:text-[11px] text-slate-400 font-semibold flex items-center justify-between">
+                                <span className="truncate">최근</span>
+                                <span className="font-mono text-[9px] sm:text-[10px] text-amber-300 font-bold bg-amber-500/10 px-1 py-0.2 rounded border border-amber-500/20 truncate">{formatUpdateTime(latest).slice(-5)}</span>
                               </span>
-                              <div className="flex items-baseline space-x-2 mt-1 font-mono">
-                                <span className={`text-base sm:text-lg font-extrabold font-outfit ${latestVal >= 0 ? 'text-amber-400' : 'text-blue-400'}`}>
-                                  {formatTooltipCurrency(latestVal)}
-                                </span>
-                                <span className="text-[11px] font-normal text-slate-400 font-sans">({formatUpdateTime(latest)})</span>
-                              </div>
+                              <span className={`text-xs sm:text-sm font-extrabold font-outfit mt-0.5 truncate ${latestVal >= 0 ? 'text-amber-400' : 'text-blue-400'}`}>
+                                {formatTooltipCurrency(latestVal)}
+                              </span>
                             </div>
 
                             {/* 전일 대비 변동폭 */}
-                            <div className="bg-slate-900/90 p-3 rounded-lg border border-slate-800/80 flex flex-col justify-between">
-                              <span className="text-[11px] text-slate-400 font-semibold">전일 대비 변동폭</span>
-                              <div className="flex items-center space-x-2 mt-1 font-mono">
-                                <span className={`text-base font-extrabold ${isPos ? 'text-rose-400' : 'text-blue-400'}`}>
-                                  {isPos ? '▲' : '▼'} {formatTooltipCurrency(diff)}
-                                </span>
-                                <span className={`text-xs px-1.5 py-0.5 rounded font-bold ${isPos ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20' : 'bg-blue-500/10 text-blue-400 border border-blue-500/20'}`}>
+                            <div className="bg-slate-900/90 py-1 px-2 sm:py-1.5 sm:px-2.5 rounded-lg border border-slate-800/80 flex flex-col justify-between min-w-0">
+                              <div className="flex items-center justify-between">
+                                <span className="text-[10px] sm:text-[11px] text-slate-400 font-semibold truncate">변동폭</span>
+                                <span className={`text-[9px] sm:text-xs px-1 py-0.2 sm:px-1.5 sm:py-0.5 rounded font-bold font-mono ${isPos ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20' : 'bg-blue-500/10 text-blue-400 border border-blue-500/20'}`}>
                                   {diffPct >= 0 ? '+' : ''}{diffPct.toFixed(2)}%
                                 </span>
                               </div>
+                              <span className={`text-xs sm:text-sm font-extrabold font-mono mt-0.5 truncate ${isPos ? 'text-rose-400' : 'text-blue-400'}`}>
+                                {isPos ? '▲' : '▼'}{formatTooltipCurrency(diff)}
+                              </span>
                             </div>
                           </div>
                         );
                       })()}
 
-                      <div className="h-[640px]">
+                      <div className="h-[380px] sm:h-[540px] lg:h-[580px] xl:h-[620px]">
                         <ResponsiveContainer width="100%" height="100%">
                           <LineChart data={cumInvestorData}>
                             <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
@@ -1546,30 +2141,26 @@ export function App() {
                   )}
 
                   {/* 2. 수급 분석: 2. 외국인, 개인, 기관, 연기금 누적 (주봉 고정, 0 기준선 추가, 상시 최신 데이터 카드) */}
+                  {/* 2. 수급 분석: 2. 4대 주체 누적 */}
                   {activeCategory === 'INVESTOR' && activeItemCode === 'MAIN_3SUB_CUM' && (
-                    <div className="bg-slate-900/90 rounded-2xl p-6 border border-slate-700/80 shadow-xl shadow-slate-950/60 space-y-4">
-                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                        <div>
-                          <div className="flex flex-wrap items-center gap-3">
-                            <h3 className="text-base font-bold text-white flex items-center gap-2">
-                              <Briefcase className="w-5 h-5 text-rose-400" />
-                              2. 외국인, 개인, 기관, 연기금 2년 누적 순매수 추이 (KOSPI - 주봉 고정)
-                            </h3>
-                            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-500/10 light:bg-amber-500/15 text-amber-300 light:text-amber-800 border border-amber-500/20 light:border-amber-500/40 shadow-sm">
-                              <span className="relative flex h-2 w-2">
-                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-                              </span>
-                              <span>Sync: {getSyncBadgeText(activeCategory, activeItemCode)}</span>
-                            </div>
+                    <div className="bg-slate-900/90 rounded-2xl p-2.5 sm:p-4 lg:p-4 border border-slate-700/80 shadow-xl shadow-slate-950/60 space-y-2 sm:space-y-2.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center space-x-2 min-w-0">
+                          <h3 className="text-xs sm:text-base font-bold text-white flex items-center gap-1.5 truncate">
+                            <Briefcase className="w-4 h-4 sm:w-5 sm:h-5 text-rose-400 shrink-0" />
+                            <span className="truncate">4대 주체 2년 누적 순매수 (주봉 고정)</span>
+                          </h3>
+                          <div className="hidden xs:inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] sm:text-xs font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/20 shadow-sm shrink-0">
+                            <span className="relative flex h-1.5 w-1.5">
+                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                              <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500"></span>
+                            </span>
+                            <span>{getSyncBadgeText(activeCategory, activeItemCode)}</span>
                           </div>
-                          <p className="text-xs text-slate-400 mt-1">
-                            외국인, 개인, 기관, 연기금 4대 핵심 주체의 2년 누적 수급 흐름 비교 그래프입니다.
-                          </p>
                         </div>
                       </div>
 
-                      {/* 상시 최신 4대 주체 누적 데이터 요약 카드 리스트 (전일 누적, 오늘 누적 및 변동폭 표출) */}
+                      {/* 상시 최신 4대 주체 누적 데이터 요약 카드 리스트 (모바일 2x2 그리드) */}
                       {cumInvestorData.length > 0 && (() => {
                         const latest = cumInvestorData[cumInvestorData.length - 1];
                         const prev = cumInvestorData.length > 1 ? cumInvestorData[cumInvestorData.length - 2] : null;
@@ -1582,7 +2173,7 @@ export function App() {
                         ];
 
                         return (
-                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                          <div className="grid grid-cols-2 lg:grid-cols-4 gap-1.5 sm:gap-2.5">
                             {subjects.map((s) => {
                               const prevVal = prev ? (prev as any)[s.key] ?? 0 : 0;
                               const latestVal = (latest as any)[s.key] ?? 0;
@@ -1590,38 +2181,31 @@ export function App() {
                               const isPos = diff >= 0;
 
                               return (
-                                <div key={s.key} className="p-3.5 rounded-xl bg-slate-950/90 border border-slate-800 space-y-2">
-                                  <div className="flex items-center justify-between border-b border-slate-800/80 pb-1.5">
-                                    <span className="text-xs font-bold text-slate-200 flex items-center gap-1.5">
-                                      <span className="w-2.5 h-2.5 rounded-full inline-block" style={{ backgroundColor: s.color }}></span>
+                                <div key={s.key} className="p-1.5 sm:py-1.5 sm:px-2.5 rounded-xl bg-slate-950/90 border border-slate-800 space-y-0.5 sm:space-y-1">
+                                  <div className="flex items-center justify-between border-b border-slate-800/80 pb-0.5 sm:pb-1">
+                                    <span className="text-[9.5px] sm:text-xs font-bold text-slate-200 flex items-center gap-1">
+                                      <span className="w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full inline-block" style={{ backgroundColor: s.color }}></span>
                                       {s.name}
                                     </span>
-                                    <span className="text-[10px] text-slate-500 font-mono">{latest.dt}</span>
+                                    <span className="text-[8.5px] sm:text-[9px] text-slate-500 font-mono hidden xs:inline">{latest.dt}</span>
                                   </div>
 
-                                  <div className="space-y-1 font-mono text-xs">
+                                  <div className="space-y-0.5 font-mono text-[9.5px] sm:text-xs">
                                     <div className="flex items-center justify-between text-slate-400">
                                       <span>전일:</span>
                                       <span className="font-semibold text-slate-300">{formatTooltipCurrency(prevVal)}</span>
                                     </div>
                                     <div className="flex items-center justify-between">
-                                      <span className="text-slate-400">오늘:</span>
+                                      <span>오늘:</span>
                                       <span className={`font-extrabold ${latestVal >= 0 ? s.textCol : 'text-blue-400'}`}>
                                         {formatTooltipCurrency(latestVal)}
                                       </span>
                                     </div>
-                                    <div className="flex items-center justify-between pt-1 border-t border-slate-800/50">
-                                      <span className="text-slate-400 text-[11px]">변동폭:</span>
-                                      <div className="flex items-center gap-1">
-                                        <span className={`font-extrabold text-[11px] ${isPos ? 'text-rose-400' : 'text-blue-400'}`}>
-                                          {isPos ? '▲' : '▼'} {formatTooltipCurrency(diff)}
-                                        </span>
-                                        {prevVal !== 0 && (
-                                          <span className={`text-[10px] font-bold ${isPos ? 'text-rose-400' : 'text-blue-400'}`}>
-                                            ({((diff / Math.abs(prevVal)) * 100) >= 0 ? '+' : ''}{((diff / Math.abs(prevVal)) * 100).toFixed(1)}%)
-                                          </span>
-                                        )}
-                                      </div>
+                                    <div className="flex items-center justify-between pt-0.5 border-t border-slate-800/50">
+                                      <span className="text-slate-400 text-[9px] sm:text-[10px]">변동:</span>
+                                      <span className={`font-extrabold text-[9px] sm:text-[10px] ${isPos ? 'text-rose-400' : 'text-blue-400'}`}>
+                                        {isPos ? '▲' : '▼'}{formatTooltipCurrency(diff)}
+                                      </span>
                                     </div>
                                   </div>
                                 </div>
@@ -1631,7 +2215,7 @@ export function App() {
                         );
                       })()}
 
-                      <div className="h-[640px]">
+                      <div className="h-[380px] sm:h-[540px] lg:h-[580px] xl:h-[620px]">
                         <ResponsiveContainer width="100%" height="100%">
                           <LineChart data={cumInvestorData}>
                             <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
@@ -1665,27 +2249,69 @@ export function App() {
 
                   {/* 3. 수급 분석: 3. 주체별 순매수 */}
                   {activeCategory === 'INVESTOR' && activeItemCode === 'INVESTOR_NET' && (
-                    <div className="bg-slate-900/90 rounded-2xl p-6 border border-slate-700/80 shadow-xl shadow-slate-950/60 space-y-4">
-                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                        <div className="flex flex-wrap items-center gap-3">
-                          <h3 className="text-base font-bold text-white flex items-center gap-2">
-                            <Briefcase className="w-5 h-5 text-rose-400" />
-                            3. 주체별 순매수 (최근 2주 기본, 최대 1달)
+                    <div className="bg-slate-900/90 rounded-2xl p-2.5 sm:p-4 lg:p-4 border border-slate-700/80 shadow-xl shadow-slate-950/60 space-y-2 sm:space-y-2.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center space-x-2 min-w-0">
+                          <h3 className="text-xs sm:text-base font-bold text-white flex items-center gap-1.5 truncate">
+                            <Briefcase className="w-4 h-4 sm:w-5 sm:h-5 text-rose-400 shrink-0" />
+                            <span className="truncate">3. 주체별 순매수 (최근 2주 기본, 최대 1달)</span>
                           </h3>
-                          <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-500/10 light:bg-amber-500/15 text-amber-300 light:text-amber-800 border border-amber-500/20 light:border-amber-500/40 shadow-sm">
-                            <span className="relative flex h-2 w-2">
+                          <div className="hidden xs:inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] sm:text-xs font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/20 shadow-sm shrink-0">
+                            <span className="relative flex h-1.5 w-1.5">
                               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                              <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                              <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500"></span>
                             </span>
-                            <span>Sync: {getSyncBadgeText(activeCategory, activeItemCode)}</span>
+                            <span>{getSyncBadgeText(activeCategory, activeItemCode)}</span>
                           </div>
                         </div>
                       </div>
 
-                      {/* 주체 선택 필터 버튼 옵션 */}
+                      {/* 모바일 전용 주체 선택 드롭다운 (화면 < sm) */}
+                      <div className="flex sm:hidden items-center justify-between gap-2 p-2 bg-slate-950/80 rounded-xl border border-slate-800">
+                        <span className="text-xs text-slate-400 font-semibold flex items-center gap-1 shrink-0">
+                          <Filter className="w-3.5 h-3.5 text-amber-400" /> 주체 선택:
+                        </span>
+                        <select
+                          value={
+                            selectedSubjects.length === ALL_INVESTOR_SUBJECTS.length
+                              ? 'ALL'
+                              : selectedSubjects.length === 3 &&
+                                selectedSubjects.includes('foreigner_net') &&
+                                selectedSubjects.includes('individual_net') &&
+                                selectedSubjects.includes('institution_net')
+                              ? 'MAIN_3'
+                              : selectedSubjects.length === 1
+                              ? selectedSubjects[0]
+                              : 'CUSTOM'
+                          }
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            if (val === 'MAIN_3') {
+                              setSelectedSubjects(['foreigner_net', 'individual_net', 'institution_net']);
+                            } else if (val === 'ALL') {
+                              setSelectedSubjects(ALL_INVESTOR_SUBJECTS.map((s) => s.key));
+                            } else if (val === 'CUSTOM') {
+                              // keep current
+                            } else {
+                              setSelectedSubjects([val]);
+                            }
+                          }}
+                          className="bg-slate-900 text-amber-300 font-bold text-xs px-2.5 py-1.5 rounded-lg border border-slate-700 focus:outline-none focus:border-amber-400 cursor-pointer flex-1 min-w-0"
+                        >
+                          <option value="MAIN_3">🌟 주요 3대 주체 (외인/개인/기관)</option>
+                          <option value="ALL">🌐 전체 주체 (모두 보기)</option>
+                          <optgroup label="개별 주체 선택">
+                            {ALL_INVESTOR_SUBJECTS.map((sub) => (
+                              <option key={sub.key} value={sub.key}>
+                                {sub.label}
+                              </option>
+                            ))}
+                          </optgroup>
+                        </select>
+                      </div>
 
-                      {/* 주체 선택 필터 버튼 옵션 */}
-                      <div className="flex flex-wrap items-center gap-2 p-3 bg-slate-950/80 rounded-xl border border-slate-800">
+                      {/* PC 전용 주체 선택 필터 버튼 (화면 >= sm) */}
+                      <div className="hidden sm:flex flex-wrap items-center gap-2 p-3 bg-slate-950/80 rounded-xl border border-slate-800">
                         <span className="text-xs text-slate-400 font-semibold mr-1 flex items-center gap-1">
                           <Filter className="w-3.5 h-3.5 text-amber-400" /> 조회 주체 선택:
                         </span>
@@ -1711,52 +2337,43 @@ export function App() {
                         })}
                       </div>
 
-
-                      {/* 상시 최신 거래일 주체별 순매수 데이터 요약 카드 리스트 (슬림 컴팩트 디자인 - 높이 축소로 그래프 밀림 완벽 방지) */}
+                      {/* 상시 최신 거래일 주체별 순매수 데이터 요약 (모바일 1줄에 4개 초소형 배치) */}
                       {dailyInvestorData.length > 0 && (() => {
                         const latest = dailyInvestorData[dailyInvestorData.length - 1];
                         const activeSubjects = ALL_INVESTOR_SUBJECTS.filter((sub) => selectedSubjects.includes(sub.key));
-                        const count = activeSubjects.length;
-
-                        // 주체 수에 따라 그리드 컬럼 수 최적화 (4개 이하 4열, 5개 이상 6~8열로 1줄에 밀집 배치)
-                        const gridColsClass =
-                          count <= 4
-                            ? 'grid-cols-2 sm:grid-cols-4'
-                            : 'grid-cols-2 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8';
 
                         return (
-                          <div className="space-y-1.5 pt-0.5">
+                          <div className="space-y-1 pt-0.5">
                             <div className="flex items-center justify-between px-1">
-                              <span className="text-[11px] font-semibold text-slate-400">
-                                최근 거래일 (<span className="text-amber-400 font-mono font-bold">{latest.dt}</span>) 주체별 순매수:
+                              <span className="text-[10px] sm:text-[11px] font-semibold text-slate-400">
+                                최근 거래일 (<span className="text-amber-400 font-mono font-bold">{latest.dt}</span>) 순매수:
                               </span>
                             </div>
 
-                            <div className={`grid ${gridColsClass} gap-1.5`}>
+                            {/* 모바일 4열 (grid-cols-4), 데스크탑 4~8열 */}
+                            <div className="grid grid-cols-4 sm:grid-cols-4 md:grid-cols-6 lg:grid-cols-8 gap-1 sm:gap-1.5">
                               {activeSubjects.map((sub) => {
                                 const val = (latest as any)[sub.key] ?? 0;
                                 const isPos = val >= 0;
                                 return (
                                   <div
                                     key={sub.key}
-                                    className="px-2.5 py-1.5 rounded-lg bg-slate-950/90 border border-slate-800 flex items-center justify-between shadow-inner"
+                                    className="p-1 sm:p-1.5 rounded-lg bg-slate-950/90 border border-slate-800 flex flex-col justify-center min-w-0 shadow-inner"
                                   >
-                                    <div className="min-w-0 flex-1">
-                                      <span className="text-[10px] text-slate-400 font-semibold flex items-center gap-1 truncate mb-0.5">
-                                        <span
-                                          className="w-2 h-2 rounded-full inline-block shrink-0"
-                                          style={{ backgroundColor: sub.color }}
-                                        ></span>{' '}
-                                        {sub.label}
-                                      </span>
+                                    <span className="text-[8px] sm:text-[10px] text-slate-400 font-semibold flex items-center gap-0.5 sm:gap-1 truncate mb-0.5">
                                       <span
-                                        className={`text-xs sm:text-sm font-extrabold font-outfit block truncate ${
-                                          isPos ? 'text-rose-400' : 'text-blue-400'
-                                        }`}
-                                      >
-                                        {formatTooltipCurrency(val)}
-                                      </span>
-                                    </div>
+                                        className="w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full inline-block shrink-0"
+                                        style={{ backgroundColor: sub.color }}
+                                      ></span>
+                                      <span className="truncate">{sub.label}</span>
+                                    </span>
+                                    <span
+                                      className={`text-[9.5px] sm:text-xs md:text-sm font-extrabold font-outfit block truncate ${
+                                        isPos ? 'text-rose-400' : 'text-blue-400'
+                                      }`}
+                                    >
+                                      {formatTooltipCurrency(val)}
+                                    </span>
                                   </div>
                                 );
                               })}
@@ -1765,7 +2382,7 @@ export function App() {
                         );
                       })()}
 
-                      <div className="h-[640px]">
+                      <div className="h-[380px] sm:h-[540px] lg:h-[580px] xl:h-[620px]">
                         <ResponsiveContainer width="100%" height="100%">
                           <BarChart data={dailyInvestorData}>
                             <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
@@ -1810,49 +2427,16 @@ export function App() {
                         const pageRows = sortedData.slice(startIdx, startIdx + pageSize);
 
                         return (
-                          <div className="bg-slate-950/90 rounded-xl p-4 border border-slate-800 space-y-3 font-sans mt-4">
-                            {/* 헤더 & 페이징 버튼 바 */}
-                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800/80 pb-3">
-                              <div>
-                                <h4 className="text-sm font-bold text-slate-100 flex items-center gap-2">
-                                  <TableIcon className="w-4 h-4 text-amber-400" />
-                                  일별 주체별 순매수 상세 표 (5일 단위 페이징)
-                                </h4>
-                                <p className="text-[11px] text-slate-400 mt-0.5">
-                                  상단 기간 버튼과 독립적으로 최근 6개월 일별 순매수 수치를 5일 단위로 조회합니다.
-                                </p>
-                              </div>
-
-                              {/* 페이징 내비게이션 컨트롤 */}
-                              <div className="flex items-center space-x-2">
-                                <button
-                                  disabled={currentPage >= totalPages}
-                                  onClick={() => setTablePage(currentPage + 1)}
-                                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1 ${
-                                    currentPage < totalPages
-                                      ? 'bg-slate-800 text-slate-200 hover:bg-slate-700 cursor-pointer'
-                                      : 'bg-slate-900 text-slate-600 cursor-not-allowed'
-                                  }`}
-                                >
-                                  <ChevronLeft className="w-3.5 h-3.5" /> 이전 5일
-                                </button>
-
-                                <span className="text-xs font-mono text-amber-300 font-bold bg-amber-500/10 px-2.5 py-1 rounded-lg border border-amber-500/20">
-                                  {currentPage} / {totalPages} 페이지 ({pageRows[pageRows.length - 1]?.dt} ~ {pageRows[0]?.dt})
-                                </span>
-
-                                <button
-                                  disabled={currentPage <= 1}
-                                  onClick={() => setTablePage(currentPage - 1)}
-                                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1 ${
-                                    currentPage > 1
-                                      ? 'bg-slate-800 text-slate-200 hover:bg-slate-700 cursor-pointer'
-                                      : 'bg-slate-900 text-slate-600 cursor-not-allowed'
-                                  }`}
-                                >
-                                  다음 5일 <ChevronRight className="w-3.5 h-3.5" />
-                                </button>
-                              </div>
+                          <div className="bg-slate-950/90 rounded-xl p-3 sm:p-4 border border-slate-800 space-y-3 font-sans mt-3">
+                            {/* 표 상단 제목 헤더 */}
+                            <div className="border-b border-slate-800/80 pb-2">
+                              <h4 className="text-xs sm:text-sm font-bold text-slate-100 flex items-center gap-1.5">
+                                <TableIcon className="w-4 h-4 text-amber-400 shrink-0" />
+                                <span>일별 주체별 순매수 상세 표 (5일 단위 페이징)</span>
+                              </h4>
+                              <p className="text-[10.5px] sm:text-[11px] text-slate-400 mt-0.5">
+                                상단 기간 버튼과 독립적으로 최근 6개월 일별 순매수 수치를 5일 단위로 조회합니다.
+                              </p>
                             </div>
 
                             {/* 5일치 순매수 데이터 테이블 (가로 스크롤 지원) */}
@@ -1860,17 +2444,17 @@ export function App() {
                               <table className="w-full text-xs font-mono border-collapse">
                                 <thead>
                                   <tr className="bg-slate-900/90 text-slate-400 text-[11px] border-b border-slate-800">
-                                    <th className="py-2.5 px-3 text-left font-semibold">날짜 (dt)</th>
-                                    <th className="py-2.5 px-2 text-right font-semibold text-amber-400">외국인</th>
-                                    <th className="py-2.5 px-2 text-right font-semibold text-emerald-400">개인</th>
-                                    <th className="py-2.5 px-2 text-right font-semibold text-purple-400">기관합계</th>
-                                    <th className="py-2.5 px-2 text-right font-semibold text-cyan-400">금융투자</th>
-                                    <th className="py-2.5 px-2 text-right font-semibold text-teal-400">투신</th>
-                                    <th className="py-2.5 px-2 text-right font-semibold text-indigo-400">사모</th>
-                                    <th className="py-2.5 px-2 text-right font-semibold text-sky-400">은행</th>
-                                    <th className="py-2.5 px-2 text-right font-semibold text-pink-400">보험</th>
-                                    <th className="py-2.5 px-2 text-right font-semibold text-slate-300">기타금융</th>
-                                    <th className="py-2.5 px-2 text-right font-semibold text-rose-400">연기금</th>
+                                    <th className="py-2 px-2.5 text-left font-semibold whitespace-nowrap">날짜 (dt)</th>
+                                    <th className="py-2 px-2 text-right font-semibold text-amber-400 whitespace-nowrap">외국인</th>
+                                    <th className="py-2 px-2 text-right font-semibold text-emerald-400 whitespace-nowrap">개인</th>
+                                    <th className="py-2 px-2 text-right font-semibold text-purple-400 whitespace-nowrap">기관합계</th>
+                                    <th className="py-2 px-2 text-right font-semibold text-cyan-400 whitespace-nowrap">금융투자</th>
+                                    <th className="py-2 px-2 text-right font-semibold text-teal-400 whitespace-nowrap">투신</th>
+                                    <th className="py-2 px-2 text-right font-semibold text-indigo-400 whitespace-nowrap">사모</th>
+                                    <th className="py-2 px-2 text-right font-semibold text-sky-400 whitespace-nowrap">은행</th>
+                                    <th className="py-2 px-2 text-right font-semibold text-pink-400 whitespace-nowrap">보험</th>
+                                    <th className="py-2 px-2 text-right font-semibold text-slate-300 whitespace-nowrap">기타금융</th>
+                                    <th className="py-2 px-2 text-right font-semibold text-rose-400 whitespace-nowrap">연기금</th>
                                   </tr>
                                 </thead>
                                 <tbody className="divide-y divide-slate-800/60">
@@ -1890,7 +2474,7 @@ export function App() {
 
                                     return (
                                       <tr key={row.dt} className="hover:bg-slate-900/60 transition">
-                                        <td className="py-2 px-3 text-left font-bold text-slate-200">{row.dt}</td>
+                                        <td className="py-2 px-2.5 text-left font-bold text-slate-200 whitespace-nowrap">{formatTableDate(row.dt)}</td>
                                         {cols.map((col, idx) => {
                                           const isPos = col.val > 0;
                                           const isNeg = col.val < 0;
@@ -1901,8 +2485,8 @@ export function App() {
                                             : 'text-slate-500';
 
                                           return (
-                                            <td key={idx} className={`py-2 px-2 text-right ${textClass}`}>
-                                              {formatTooltipCurrency(col.val)}
+                                            <td key={idx} className={`py-2 px-2 text-right whitespace-nowrap ${textClass}`}>
+                                              {formatTableCurrency(col.val)}
                                             </td>
                                           );
                                         })}
@@ -1912,6 +2496,45 @@ export function App() {
                                 </tbody>
                               </table>
                             </div>
+
+                            {/* 표 하단 페이징 내비게이션 컨트롤 바: 좌측 [이후 5일] / 중앙 [페이지 & 날짜] / 우측 [이전 5일] */}
+                            <div className="flex items-center justify-between gap-2 pt-2.5 border-t border-slate-800/80 font-sans">
+                              {/* 좌측: 이후 5일 (최근 방향) */}
+                              <button
+                                disabled={currentPage <= 1}
+                                onClick={() => setTablePage(currentPage - 1)}
+                                className={`px-2.5 sm:px-3.5 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1 shrink-0 whitespace-nowrap ${
+                                  currentPage > 1
+                                    ? 'bg-slate-800 hover:bg-slate-700 text-slate-200 cursor-pointer active:scale-95 shadow-sm'
+                                    : 'bg-slate-900/60 text-slate-600 border border-slate-800 cursor-not-allowed'
+                                }`}
+                              >
+                                <ChevronLeft className="w-3.5 h-3.5" />
+                                <span>이후 5일</span>
+                              </button>
+
+                              {/* 중앙: 페이지 번호 및 날짜 범위 (YY.MM.DD 형식) */}
+                              <div className="flex items-center gap-1 text-[11px] sm:text-xs font-mono text-amber-300 font-bold bg-amber-500/10 px-2 sm:px-3 py-1.5 rounded-xl border border-amber-500/20 truncate justify-center text-center">
+                                <span className="whitespace-nowrap">{currentPage} / {totalPages} 페이지</span>
+                                <span className="text-[10px] sm:text-[11px] text-slate-400 hidden xs:inline whitespace-nowrap">
+                                  ({formatTableDate(pageRows[pageRows.length - 1]?.dt)} ~ {formatTableDate(pageRows[0]?.dt)})
+                                </span>
+                              </div>
+
+                              {/* 우측: 이전 5일 (과거 방향) */}
+                              <button
+                                disabled={currentPage >= totalPages}
+                                onClick={() => setTablePage(currentPage + 1)}
+                                className={`px-2.5 sm:px-3.5 py-1.5 rounded-xl text-xs font-bold transition flex items-center gap-1 shrink-0 whitespace-nowrap ${
+                                  currentPage < totalPages
+                                    ? 'bg-slate-800 hover:bg-slate-700 text-slate-200 cursor-pointer active:scale-95 shadow-sm'
+                                    : 'bg-slate-900/60 text-slate-600 border border-slate-800 cursor-not-allowed'
+                                }`}
+                              >
+                                <span>이전 5일</span>
+                                <ChevronRight className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
                           </div>
                         );
                       })()}
@@ -1920,28 +2543,54 @@ export function App() {
 
                   {/* 2. 시장 지수 (봉차트 기본, 옵션 라인차트 선택 기능 지원, 3대 보조지표 및 상시 최신 데이터 요약 카드 연동) */}
                   {activeCategory === 'MARKET' && (
-                    <div className="bg-slate-900/90 rounded-2xl p-6 border border-slate-700/80 shadow-xl shadow-slate-950/60 space-y-4">
-                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                        <div className="flex flex-wrap items-center gap-3">
-                          <h3 className="text-base font-bold text-white flex items-center gap-2">
-                            <Activity className="w-5 h-5 text-amber-400" />
-                            시장 지수 {activeItemCode} ({targetSymbol}) 시계열 ({periodType === 'D' ? '일봉' : '주봉'})
+                    <div className="bg-slate-900/90 rounded-2xl p-2.5 sm:p-4 lg:p-4 border border-slate-700/80 shadow-xl shadow-slate-950/60 space-y-2 sm:space-y-2.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center space-x-2 min-w-0">
+                          <h3 className="text-xs sm:text-base font-bold text-white flex items-center gap-1.5 truncate">
+                            <Activity className="w-4 h-4 sm:w-5 sm:h-5 text-amber-400 shrink-0" />
+                            <span className="truncate">시장 지수 {activeItemCode} ({targetSymbol}) ({periodType === 'D' ? '일봉' : '주봉'})</span>
                           </h3>
-                          <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-500/10 light:bg-amber-500/15 text-amber-300 light:text-amber-800 border border-amber-500/20 light:border-amber-500/40 shadow-sm">
-                            <span className="relative flex h-2 w-2">
+                          <div className="hidden xs:inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] sm:text-xs font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/20 shadow-sm shrink-0">
+                            <span className="relative flex h-1.5 w-1.5">
                               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                              <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                              <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500"></span>
                             </span>
-                            <span>Sync: {getSyncBadgeText(activeCategory, activeItemCode)}</span>
+                            <span>{getSyncBadgeText(activeCategory, activeItemCode)}</span>
                           </div>
                         </div>
 
-                        {/* 봉차트 (기본) vs 라인차트 (옵션) 전환 온오프 토글 스위치 */}
-                        <div className="flex items-center space-x-2 bg-slate-950/90 p-1.5 rounded-xl border border-slate-800">
-                          <span className="text-xs text-slate-400 font-semibold px-1">차트 형태:</span>
+                        {/* 모바일 컴팩트 이모티콘 차트 형태 스위치 (화면 < sm) */}
+                        <div className="flex sm:hidden items-center bg-slate-950 p-0.5 rounded-lg border border-slate-800 shrink-0">
                           <button
                             onClick={() => setMarketChartType('bar')}
-                            className={`px-3 py-1 rounded-lg text-xs font-bold transition ${
+                            className={`px-1.5 py-0.5 rounded-md text-xs font-bold transition flex items-center justify-center cursor-pointer ${
+                              marketChartType === 'bar'
+                                ? 'bg-gradient-to-r from-amber-500 to-amber-600 text-white shadow-sm'
+                                : 'text-slate-400 hover:text-slate-200'
+                            }`}
+                            title="봉차트 보기"
+                          >
+                            <span className="text-[11px]">📊</span>
+                          </button>
+                          <button
+                            onClick={() => setMarketChartType('line')}
+                            className={`px-1.5 py-0.5 rounded-md text-xs font-bold transition flex items-center justify-center cursor-pointer ${
+                              marketChartType === 'line'
+                                ? 'bg-gradient-to-r from-amber-500 to-amber-600 text-white shadow-sm'
+                                : 'text-slate-400 hover:text-slate-200'
+                            }`}
+                            title="라인차트 보기"
+                          >
+                            <span className="text-[11px]">📈</span>
+                          </button>
+                        </div>
+
+                        {/* PC 화면 전용 차트 형태 전환 스위치 (화면 >= sm) */}
+                        <div className="hidden sm:flex items-center space-x-1.5 bg-slate-950/90 p-1 rounded-xl border border-slate-800 shrink-0">
+                          <span className="text-[11px] text-slate-400 font-semibold px-1">차트 형태:</span>
+                          <button
+                            onClick={() => setMarketChartType('bar')}
+                            className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
                               marketChartType === 'bar'
                                 ? 'bg-gradient-to-r from-amber-500 to-amber-600 text-white shadow-md'
                                 : 'text-slate-400 hover:text-slate-200'
@@ -1951,7 +2600,7 @@ export function App() {
                           </button>
                           <button
                             onClick={() => setMarketChartType('line')}
-                            className={`px-3 py-1 rounded-lg text-xs font-bold transition ${
+                            className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
                               marketChartType === 'line'
                                 ? 'bg-gradient-to-r from-amber-500 to-amber-600 text-white shadow-md'
                                 : 'text-slate-400 hover:text-slate-200'
@@ -1962,7 +2611,7 @@ export function App() {
                         </div>
                       </div>
 
-                      {/* 상시 최신 시장 지수 데이터 요약 카드 (전일, 오늘 지수 및 수치 변동폭 표출) */}
+                      {/* 상시 최신 시장 지수 데이터 요약 카드 (모바일 3열 콤팩트 배치) */}
                       {processedIndexData.length > 0 && (() => {
                         const latest = processedIndexData[processedIndexData.length - 1];
                         const prev = processedIndexData.length > 1 ? processedIndexData[processedIndexData.length - 2] : null;
@@ -1985,43 +2634,42 @@ export function App() {
                         };
 
                         return (
-                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-4 bg-slate-950/80 rounded-xl border border-slate-800 font-sans">
+                          <div className="grid grid-cols-3 gap-1.5 sm:gap-2.5 p-1.5 sm:p-2 sm:py-1.5 bg-slate-950/80 rounded-xl border border-slate-800 font-sans">
                             {/* 전일 지수 */}
-                            <div className="bg-slate-900/90 p-3 rounded-lg border border-slate-800/80 flex flex-col justify-between">
-                              <span className="text-[11px] text-slate-400 font-semibold flex items-center justify-between">
-                                <span>전일 지수</span>
-                                <span className="font-mono text-[10px] text-slate-500">{prev ? prev.date : '-'}</span>
+                            <div className="bg-slate-900/90 py-1 px-2 sm:py-1.5 sm:px-2.5 rounded-lg border border-slate-800/80 flex flex-col justify-between min-w-0">
+                              <span className="text-[10px] sm:text-[11px] text-slate-400 font-semibold flex items-center justify-between">
+                                <span className="truncate">전일</span>
+                                <span className="font-mono text-[9px] sm:text-[10px] text-slate-500 hidden xs:inline">{prev ? prev.date : '-'}</span>
                               </span>
-                              <span className="text-base font-bold text-slate-200 font-mono mt-1">
+                              <span className="text-xs sm:text-sm font-bold text-slate-200 font-mono mt-0.5 truncate">
                                 {formatVal(prevVal)}
                               </span>
                             </div>
 
                             {/* 오늘 지수 */}
-                            <div className="bg-slate-900/90 p-3 rounded-lg border border-slate-800/80 flex flex-col justify-between">
-                              <span className="text-[11px] text-slate-400 font-semibold flex items-center justify-between">
-                                <span>오늘 지수 ({activeItemCode})</span>
-                                <span className="font-mono text-[10px] text-amber-300 font-bold bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20">{formatUpdateTime(latest)}</span>
-                              </span>
-                              <div className="flex items-baseline space-x-2 mt-1 font-mono">
-                                <span className="text-base font-extrabold text-amber-400 font-mono">
-                                  {formatVal(latestVal)}
+                            <div className="bg-slate-900/90 py-1 px-2 sm:py-1.5 sm:px-2.5 rounded-lg border border-slate-800/80 flex flex-col justify-between min-w-0">
+                              <span className="text-[10px] sm:text-[11px] text-slate-400 font-semibold flex items-center justify-between">
+                                <span className="truncate">오늘</span>
+                                <span className="font-mono text-[9px] sm:text-[10px] text-amber-300 font-bold bg-amber-500/10 px-1 py-0.2 rounded border border-amber-500/20 truncate">
+                                  {formatUpdateTime(latest).slice(-5)}
                                 </span>
-                                <span className="text-[11px] font-normal text-slate-400 font-sans">({formatUpdateTime(latest)})</span>
-                              </div>
+                              </span>
+                              <span className="text-xs sm:text-sm font-extrabold text-amber-400 font-mono mt-0.5 truncate">
+                                {formatVal(latestVal)}
+                              </span>
                             </div>
 
                             {/* 전일 대비 변동폭 */}
-                            <div className="bg-slate-900/90 p-3 rounded-lg border border-slate-800/80 flex flex-col justify-between">
-                              <span className="text-[11px] text-slate-400 font-semibold">전일 대비 변동폭</span>
-                              <div className="flex items-center space-x-2 mt-1 font-mono">
-                                <span className={`text-base font-extrabold ${isUp ? 'text-rose-400' : 'text-blue-400'}`}>
-                                  {isUp ? '▲' : '▼'} {formatDiff(diff)}
-                                </span>
-                                <span className={`text-xs px-1.5 py-0.5 rounded font-bold ${isUp ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20' : 'bg-blue-500/10 text-blue-400 border border-blue-500/20'}`}>
+                            <div className="bg-slate-900/90 py-1 px-2 sm:py-1.5 sm:px-2.5 rounded-lg border border-slate-800/80 flex flex-col justify-between min-w-0">
+                              <div className="flex items-center justify-between">
+                                <span className="text-[10px] sm:text-[11px] text-slate-400 font-semibold truncate">변동폭</span>
+                                <span className={`text-[9px] sm:text-xs px-1 py-0.2 sm:px-1.5 sm:py-0.5 rounded font-bold font-mono ${isUp ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20' : 'bg-blue-500/10 text-blue-400 border border-blue-500/20'}`}>
                                   {diffPct >= 0 ? '+' : ''}{diffPct.toFixed(2)}%
                                 </span>
                               </div>
+                              <span className={`text-xs sm:text-sm font-extrabold font-mono mt-0.5 truncate ${isUp ? 'text-rose-400' : 'text-blue-400'}`}>
+                                {isUp ? '▲' : '▼'}{formatDiff(diff)}
+                              </span>
                             </div>
                           </div>
                         );
@@ -2030,7 +2678,7 @@ export function App() {
                       {marketChartType === 'bar' ? (
                         <MacroCandleChart data={processedIndexData} symbol={activeItemCode} startDate={startDate} theme={theme} />
                       ) : (
-                        <div className="h-[640px]">
+                        <div className="h-[380px] sm:h-[540px] lg:h-[580px] xl:h-[620px]">
                           <ResponsiveContainer width="100%" height="100%">
                             <LineChart data={processedIndexData.filter((d) => d.date >= startDate)}>
                               <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
@@ -2052,28 +2700,54 @@ export function App() {
 
                   {/* 3. 거시 경제 (봉차트 기본, 옵션 라인차트 선택 기능 지원, 상시 최신 데이터 요약 카드 연동) */}
                   {activeCategory === 'MACRO' && (
-                    <div className="bg-slate-900/90 rounded-2xl p-6 border border-slate-700/80 shadow-xl shadow-slate-950/60 space-y-4">
-                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                        <div className="flex flex-wrap items-center gap-3">
-                          <h3 className="text-base font-bold text-white flex items-center gap-2">
-                            <Globe className="w-5 h-5 text-emerald-400" />
-                            거시 경제 {activeItemCode === 'KR_BOND_3Y' ? '한국 국고채 3년물' : activeItemCode} 시계열 ({periodType === 'D' ? '일봉' : '주봉'})
+                    <div className="bg-slate-900/90 rounded-2xl p-2.5 sm:p-4 lg:p-4 border border-slate-700/80 shadow-xl shadow-slate-950/60 space-y-2 sm:space-y-2.5">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center space-x-2 min-w-0">
+                          <h3 className="text-xs sm:text-base font-bold text-white flex items-center gap-1.5 truncate">
+                            <Globe className="w-4 h-4 sm:w-5 sm:h-5 text-emerald-400 shrink-0" />
+                            <span className="truncate">{activeItemCode === 'KR_BOND_3Y' ? '국고채 3년물' : activeItemCode} ({periodType === 'D' ? '일봉' : '주봉'})</span>
                           </h3>
-                          <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-500/10 light:bg-amber-500/15 text-amber-300 light:text-amber-800 border border-amber-500/20 light:border-amber-500/40 shadow-sm">
-                            <span className="relative flex h-2 w-2">
+                          <div className="hidden xs:inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] sm:text-xs font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/20 shadow-sm shrink-0">
+                            <span className="relative flex h-1.5 w-1.5">
                               <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                              <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                              <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500"></span>
                             </span>
-                            <span>Sync: {getSyncBadgeText(activeCategory, activeItemCode)}</span>
+                            <span>{getSyncBadgeText(activeCategory, activeItemCode)}</span>
                           </div>
                         </div>
 
-                        {/* 봉차트 (기본) vs 라인차트 (옵션) 전환 온오프 토글 스위치 */}
-                        <div className="flex items-center space-x-2 bg-slate-950/90 p-1.5 rounded-xl border border-slate-800">
-                          <span className="text-xs text-slate-400 font-semibold px-1">차트 형태:</span>
+                        {/* 모바일 컴팩트 이모티콘 차트 형태 스위치 (화면 < sm) */}
+                        <div className="flex sm:hidden items-center bg-slate-950 p-0.5 rounded-lg border border-slate-800 shrink-0">
                           <button
                             onClick={() => setMacroChartType('bar')}
-                            className={`px-3 py-1 rounded-lg text-xs font-bold transition ${
+                            className={`px-1.5 py-0.5 rounded-md text-xs font-bold transition flex items-center justify-center cursor-pointer ${
+                              macroChartType === 'bar'
+                                ? 'bg-gradient-to-r from-emerald-500 to-emerald-600 text-white shadow-sm'
+                                : 'text-slate-400 hover:text-slate-200'
+                            }`}
+                            title="봉차트 보기"
+                          >
+                            <span className="text-[11px]">📊</span>
+                          </button>
+                          <button
+                            onClick={() => setMacroChartType('line')}
+                            className={`px-1.5 py-0.5 rounded-md text-xs font-bold transition flex items-center justify-center cursor-pointer ${
+                              macroChartType === 'line'
+                                ? 'bg-gradient-to-r from-emerald-500 to-emerald-600 text-white shadow-sm'
+                                : 'text-slate-400 hover:text-slate-200'
+                            }`}
+                            title="라인차트 보기"
+                          >
+                            <span className="text-[11px]">📈</span>
+                          </button>
+                        </div>
+
+                        {/* PC 화면 전용 차트 형태 전환 스위치 (화면 >= sm) */}
+                        <div className="hidden sm:flex items-center space-x-1.5 bg-slate-950/90 p-1 rounded-xl border border-slate-800 shrink-0">
+                          <span className="text-[11px] text-slate-400 font-semibold px-1">차트 형태:</span>
+                          <button
+                            onClick={() => setMacroChartType('bar')}
+                            className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
                               macroChartType === 'bar'
                                 ? 'bg-gradient-to-r from-emerald-500 to-emerald-600 text-white shadow-md'
                                 : 'text-slate-400 hover:text-slate-200'
@@ -2083,7 +2757,7 @@ export function App() {
                           </button>
                           <button
                             onClick={() => setMacroChartType('line')}
-                            className={`px-3 py-1 rounded-lg text-xs font-bold transition ${
+                            className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
                               macroChartType === 'line'
                                 ? 'bg-gradient-to-r from-emerald-500 to-emerald-600 text-white shadow-md'
                                 : 'text-slate-400 hover:text-slate-200'
@@ -2094,7 +2768,7 @@ export function App() {
                         </div>
                       </div>
 
-                      {/* 상시 최신 거시 경제 데이터 요약 카드 (전일, 오늘 지표값 및 변동폭 표출) */}
+                      {/* 상시 최신 거시 경제 데이터 요약 카드 (모바일 3열 콤팩트 배치) */}
                       {processedMacroData.length > 0 && (() => {
                         const latest = processedMacroData[processedMacroData.length - 1];
                         const prev = processedMacroData.length > 1 ? processedMacroData[processedMacroData.length - 2] : null;
@@ -2118,45 +2792,43 @@ export function App() {
                           return `${v >= 0 ? '+' : ''}${v.toFixed(2)}`;
                         };
 
-
                         return (
-                          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-4 bg-slate-950/80 rounded-xl border border-slate-800 font-sans">
+                          <div className="grid grid-cols-3 gap-1.5 sm:gap-2.5 p-1.5 sm:p-2 sm:py-1.5 bg-slate-950/80 rounded-xl border border-slate-800 font-sans">
                             {/* 전일 지표값 */}
-                            <div className="bg-slate-900/90 p-3 rounded-lg border border-slate-800/80 flex flex-col justify-between">
-                              <span className="text-[11px] text-slate-400 font-semibold flex items-center justify-between">
-                                <span>전일 지표값</span>
-                                <span className="font-mono text-[10px] text-slate-500">{prev ? prev.date : '-'}</span>
+                            <div className="bg-slate-900/90 py-1 px-2 sm:py-1.5 sm:px-2.5 rounded-lg border border-slate-800/80 flex flex-col justify-between min-w-0">
+                              <span className="text-[10px] sm:text-[11px] text-slate-400 font-semibold flex items-center justify-between">
+                                <span className="truncate">전일</span>
+                                <span className="font-mono text-[9px] sm:text-[10px] text-slate-500 hidden xs:inline">{prev ? prev.date : '-'}</span>
                               </span>
-                              <span className="text-base font-bold text-slate-200 font-mono mt-1">
+                              <span className="text-xs sm:text-sm font-bold text-slate-200 font-mono mt-0.5 truncate">
                                 {formatVal(prevVal)}
                               </span>
                             </div>
 
                             {/* 오늘 지표값 */}
-                            <div className="bg-slate-900/90 p-3 rounded-lg border border-slate-800/80 flex flex-col justify-between">
-                              <span className="text-[11px] text-slate-400 font-semibold flex items-center justify-between">
-                                <span>오늘 지표값</span>
-                                <span className="font-mono text-[10px] text-amber-300 font-bold bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20">{formatUpdateTime(latest)}</span>
-                              </span>
-                              <div className="flex items-baseline space-x-2 mt-1 font-mono">
-                                <span className="text-base font-extrabold text-amber-400 font-mono">
-                                  {formatVal(latestVal)}
+                            <div className="bg-slate-900/90 py-1 px-2 sm:py-1.5 sm:px-2.5 rounded-lg border border-slate-800/80 flex flex-col justify-between min-w-0">
+                              <span className="text-[10px] sm:text-[11px] text-slate-400 font-semibold flex items-center justify-between">
+                                <span className="truncate">오늘</span>
+                                <span className="font-mono text-[9px] sm:text-[10px] text-amber-300 font-bold bg-amber-500/10 px-1 py-0.2 rounded border border-amber-500/20 truncate">
+                                  {formatUpdateTime(latest).slice(-5)}
                                 </span>
-                                <span className="text-[11px] font-normal text-slate-400 font-sans">({formatUpdateTime(latest)})</span>
-                              </div>
+                              </span>
+                              <span className="text-xs sm:text-sm font-extrabold text-amber-400 font-mono mt-0.5 truncate">
+                                {formatVal(latestVal)}
+                              </span>
                             </div>
 
                             {/* 전일 대비 변동폭 */}
-                            <div className="bg-slate-900/90 p-3 rounded-lg border border-slate-800/80 flex flex-col justify-between">
-                              <span className="text-[11px] text-slate-400 font-semibold">전일 대비 변동폭</span>
-                              <div className="flex items-center space-x-2 mt-1 font-mono">
-                                <span className={`text-base font-extrabold ${isUp ? 'text-rose-400' : 'text-blue-400'}`}>
-                                  {isUp ? '▲' : '▼'} {formatDiff(diff)}
-                                </span>
-                                <span className={`text-xs px-1.5 py-0.5 rounded font-bold ${isUp ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20' : 'bg-blue-500/10 text-blue-400 border border-blue-500/20'}`}>
+                            <div className="bg-slate-900/90 py-1 px-2 sm:py-1.5 sm:px-2.5 rounded-lg border border-slate-800/80 flex flex-col justify-between min-w-0">
+                              <div className="flex items-center justify-between">
+                                <span className="text-[10px] sm:text-[11px] text-slate-400 font-semibold truncate">변동폭</span>
+                                <span className={`text-[9px] sm:text-xs px-1 py-0.2 sm:px-1.5 sm:py-0.5 rounded font-bold font-mono ${isUp ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20' : 'bg-blue-500/10 text-blue-400 border border-blue-500/20'}`}>
                                   {diffPct >= 0 ? '+' : ''}{diffPct.toFixed(2)}%
                                 </span>
                               </div>
+                              <span className={`text-xs sm:text-sm font-extrabold font-mono mt-0.5 truncate ${isUp ? 'text-rose-400' : 'text-blue-400'}`}>
+                                {isUp ? '▲' : '▼'}{formatDiff(diff)}
+                              </span>
                             </div>
                           </div>
                         );
@@ -2165,7 +2837,7 @@ export function App() {
                       {macroChartType === 'bar' ? (
                         <MacroCandleChart data={processedMacroData} symbol={activeItemCode} startDate={startDate} theme={theme} />
                       ) : (
-                        <div className="h-[640px]">
+                        <div className="h-[380px] sm:h-[540px] lg:h-[580px] xl:h-[620px]">
                           <ResponsiveContainer width="100%" height="100%">
                             <LineChart data={processedMacroData.filter((d) => d.date >= startDate)}>
                               <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
@@ -2203,16 +2875,13 @@ export function App() {
                       };
                     });
 
-                    const currentStock = trackedStocks.find((s) => s.stock_code === activeItemCode);
-                    const stockName = currentStock ? currentStock.stock_name : activeItemCode;
-
                     return (
-                      <div className="bg-slate-900/90 rounded-2xl p-6 border border-slate-700/80 shadow-xl shadow-slate-950/60 space-y-4">
-                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                          <div className="flex flex-wrap items-center space-x-3">
-                            <h3 className="text-base font-bold text-white flex items-center gap-2">
-                              <Layers className="w-5 h-5 text-indigo-400" />
-                              관심 종목 선택:
+                      <div className="bg-slate-900/90 rounded-2xl p-2.5 sm:p-4 lg:p-4 border border-slate-700/80 shadow-xl shadow-slate-950/60 space-y-2 sm:space-y-2.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center space-x-1.5 sm:space-x-3 min-w-0">
+                            <h3 className="text-xs sm:text-base font-bold text-white flex items-center gap-1 shrink-0">
+                              <Layers className="w-4 h-4 sm:w-5 sm:h-5 text-indigo-400 shrink-0" />
+                              <span className="hidden xs:inline">종목:</span>
                             </h3>
                             {/* 드롭다운 셀렉트 박스 */}
                             <select
@@ -2221,7 +2890,7 @@ export function App() {
                                 const code = e.target.value;
                                 handleSelectMenuItem('STOCK', code, code);
                               }}
-                              className="bg-slate-950 text-amber-300 font-bold text-xs px-3.5 py-2 rounded-xl border border-slate-700 hover:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer shadow-md"
+                              className="bg-slate-950 text-amber-300 font-bold text-xs px-2.5 py-1.5 sm:px-3 sm:py-1.5 rounded-xl border border-slate-700 hover:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer shadow-md max-w-[140px] xs:max-w-[200px] truncate"
                             >
                               {trackedStocks.map((stock) => (
                                 <option key={stock.stock_code} value={stock.stock_code} className="bg-slate-900 text-white font-medium">
@@ -2230,21 +2899,47 @@ export function App() {
                               ))}
                             </select>
 
-                            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold bg-amber-500/10 light:bg-amber-500/15 text-amber-300 light:text-amber-800 border border-amber-500/20 light:border-amber-500/40 shadow-sm">
-                              <span className="relative flex h-2 w-2">
+                            <div className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] sm:text-xs font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/20 shadow-sm shrink-0">
+                              <span className="relative flex h-1.5 w-1.5">
                                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                                <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500"></span>
                               </span>
-                              <span>Sync: {getSyncBadgeText(activeCategory, activeItemCode)}</span>
+                              <span>{getSyncBadgeText(activeCategory, activeItemCode)}</span>
                             </div>
                           </div>
 
-                          {/* 봉차트 (기본) vs 라인차트 (옵션) 전환 온오프 토글 스위치 */}
-                          <div className="flex items-center space-x-2 bg-slate-950/90 p-1.5 rounded-xl border border-slate-800">
-                            <span className="text-xs text-slate-400 font-semibold px-1">차트 형태:</span>
+                          {/* 모바일 컴팩트 이모티콘 차트 형태 스위치 (화면 < sm) */}
+                          <div className="flex sm:hidden items-center bg-slate-950 p-0.5 rounded-lg border border-slate-800 shrink-0">
                             <button
                               onClick={() => setStockChartType('bar')}
-                              className={`px-3 py-1 rounded-lg text-xs font-bold transition ${
+                              className={`px-1.5 py-0.5 rounded-md text-xs font-bold transition flex items-center justify-center cursor-pointer ${
+                                stockChartType === 'bar'
+                                  ? 'bg-gradient-to-r from-indigo-500 to-indigo-600 text-white shadow-sm'
+                                  : 'text-slate-400 hover:text-slate-200'
+                              }`}
+                              title="봉차트 보기"
+                            >
+                              <span className="text-[11px]">📊</span>
+                            </button>
+                            <button
+                              onClick={() => setStockChartType('line')}
+                              className={`px-1.5 py-0.5 rounded-md text-xs font-bold transition flex items-center justify-center cursor-pointer ${
+                                stockChartType === 'line'
+                                  ? 'bg-gradient-to-r from-indigo-500 to-indigo-600 text-white shadow-md'
+                                  : 'text-slate-400 hover:text-slate-200'
+                              }`}
+                              title="라인차트 보기"
+                            >
+                              <span className="text-[11px]">📈</span>
+                            </button>
+                          </div>
+
+                          {/* PC 화면 전용 차트 형태 전환 스위치 (화면 >= sm) */}
+                          <div className="hidden sm:flex items-center space-x-1.5 bg-slate-950/90 p-1 rounded-xl border border-slate-800 shrink-0">
+                            <span className="text-[11px] text-slate-400 font-semibold px-1">차트 형태:</span>
+                            <button
+                              onClick={() => setStockChartType('bar')}
+                              className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
                                 stockChartType === 'bar'
                                   ? 'bg-gradient-to-r from-indigo-500 to-indigo-600 text-white shadow-md'
                                   : 'text-slate-400 hover:text-slate-200'
@@ -2254,7 +2949,7 @@ export function App() {
                             </button>
                             <button
                               onClick={() => setStockChartType('line')}
-                              className={`px-3 py-1 rounded-lg text-xs font-bold transition ${
+                              className={`px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
                                 stockChartType === 'line'
                                   ? 'bg-gradient-to-r from-indigo-500 to-indigo-600 text-white shadow-md'
                                   : 'text-slate-400 hover:text-slate-200'
@@ -2265,7 +2960,7 @@ export function App() {
                           </div>
                         </div>
 
-                        {/* 상시 최신 개별 종목 데이터 요약 카드 (전일, 오늘 주가 및 수치 변동폭 표출) */}
+                        {/* 상시 최신 개별 종목 데이터 요약 카드 (모바일 3열 콤팩트 배치) */}
                         {processedStockData.length > 0 && (() => {
                           const latest = processedStockData[processedStockData.length - 1];
                           const prev = processedStockData.length > 1 ? processedStockData[processedStockData.length - 2] : null;
@@ -2279,43 +2974,42 @@ export function App() {
                           const formatDiff = (v: number) => `${v >= 0 ? '+' : ''}${v.toLocaleString()} 원`;
 
                           return (
-                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-4 bg-slate-950/80 rounded-xl border border-slate-800 font-sans">
+                            <div className="grid grid-cols-3 gap-1.5 sm:gap-2.5 p-1.5 sm:p-2 sm:py-1.5 bg-slate-950/80 rounded-xl border border-slate-800 font-sans">
                               {/* 전일 주가 */}
-                              <div className="bg-slate-900/90 p-3 rounded-lg border border-slate-800/80 flex flex-col justify-between">
-                                <span className="text-[11px] text-slate-400 font-semibold flex items-center justify-between">
-                                  <span>전일 주가</span>
-                                  <span className="font-mono text-[10px] text-slate-500">{prev ? prev.date : '-'}</span>
+                              <div className="bg-slate-900/90 py-1 px-2 sm:py-1.5 sm:px-2.5 rounded-lg border border-slate-800/80 flex flex-col justify-between min-w-0">
+                                <span className="text-[10px] sm:text-[11px] text-slate-400 font-semibold flex items-center justify-between">
+                                  <span className="truncate">전일</span>
+                                  <span className="font-mono text-[9px] sm:text-[10px] text-slate-500 hidden xs:inline">{prev ? prev.date : '-'}</span>
                                 </span>
-                                <span className="text-base font-bold text-slate-200 font-mono mt-1">
+                                <span className="text-xs sm:text-sm font-bold text-slate-200 font-mono mt-0.5 truncate">
                                   {formatVal(prevVal)}
                                 </span>
                               </div>
 
                               {/* 오늘 주가 */}
-                              <div className="bg-slate-900/90 p-3 rounded-lg border border-slate-800/80 flex flex-col justify-between">
-                                <span className="text-[11px] text-slate-400 font-semibold flex items-center justify-between">
-                                  <span>오늘 주가 ({stockName})</span>
-                                  <span className="font-mono text-[10px] text-amber-300 font-bold bg-amber-500/10 px-1.5 py-0.5 rounded border border-amber-500/20">{formatUpdateTime(latest)}</span>
-                                </span>
-                                <div className="flex items-baseline space-x-2 mt-1 font-mono">
-                                  <span className="text-base font-extrabold text-indigo-400 font-mono">
-                                    {formatVal(latestVal)}
+                              <div className="bg-slate-900/90 py-1 px-2 sm:py-1.5 sm:px-2.5 rounded-lg border border-slate-800/80 flex flex-col justify-between min-w-0">
+                                <span className="text-[10px] sm:text-[11px] text-slate-400 font-semibold flex items-center justify-between">
+                                  <span className="truncate">오늘</span>
+                                  <span className="font-mono text-[9px] sm:text-[10px] text-amber-300 font-bold bg-amber-500/10 px-1 py-0.2 rounded border border-amber-500/20 truncate">
+                                    {formatUpdateTime(latest).slice(-5)}
                                   </span>
-                                  <span className="text-[11px] font-normal text-slate-400 font-sans">({formatUpdateTime(latest)})</span>
-                                </div>
+                                </span>
+                                <span className="text-xs sm:text-sm font-extrabold text-indigo-400 font-mono mt-0.5 truncate">
+                                  {formatVal(latestVal)}
+                                </span>
                               </div>
 
                               {/* 전일 대비 변동폭 */}
-                              <div className="bg-slate-900/90 p-3 rounded-lg border border-slate-800/80 flex flex-col justify-between">
-                                <span className="text-[11px] text-slate-400 font-semibold">전일 대비 변동폭</span>
-                                <div className="flex items-center space-x-2 mt-1 font-mono">
-                                  <span className={`text-base font-extrabold ${isUp ? 'text-rose-400' : 'text-blue-400'}`}>
-                                    {isUp ? '▲' : '▼'} {formatDiff(diff)}
-                                  </span>
-                                  <span className={`text-xs px-1.5 py-0.5 rounded font-bold ${isUp ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20' : 'bg-blue-500/10 text-blue-400 border border-blue-500/20'}`}>
+                              <div className="bg-slate-900/90 py-1 px-2 sm:py-1.5 sm:px-2.5 rounded-lg border border-slate-800/80 flex flex-col justify-between min-w-0">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-[10px] sm:text-[11px] text-slate-400 font-semibold truncate">변동폭</span>
+                                  <span className={`text-[9px] sm:text-xs px-1 py-0.2 sm:px-1.5 sm:py-0.5 rounded font-bold font-mono ${isUp ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20' : 'bg-blue-500/10 text-blue-400 border border-blue-500/20'}`}>
                                     {diffPct >= 0 ? '+' : ''}{diffPct.toFixed(2)}%
                                   </span>
                                 </div>
+                                <span className={`text-xs sm:text-sm font-extrabold font-mono mt-0.5 truncate ${isUp ? 'text-rose-400' : 'text-blue-400'}`}>
+                                  {isUp ? '▲' : '▼'}{formatDiff(diff)}
+                                </span>
                               </div>
                             </div>
                           );
@@ -2324,7 +3018,7 @@ export function App() {
                         {stockChartType === 'bar' ? (
                           <MacroCandleChart data={processedStockData} symbol={activeItemCode} startDate={startDate} theme={theme} />
                         ) : (
-                          <div className="h-[640px]">
+                          <div className="h-[380px] sm:h-[540px] lg:h-[580px] xl:h-[620px]">
                             <ResponsiveContainer width="100%" height="100%">
                               <LineChart data={processedStockData.filter((d) => d.date >= startDate)}>
                                 <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
@@ -2348,18 +3042,57 @@ export function App() {
               )}
               </div>
 
-              {/* 우측 다음 커서 버튼 전용 고정 슬롯 (차트 그래프 박스 중앙 위치 정렬 mt-[390px]) */}
-              <div className="w-12 shrink-0 mt-[390px] flex justify-center z-20">
+              {/* 우측 다음 커서 버튼 전용 고정 슬롯 (PC 화면 전용 hidden lg:flex) */}
+              <div className="hidden lg:flex w-10 shrink-0 mt-[260px] justify-center z-20">
                 {hasNext ? (
                   <button
                     onClick={() => nextItem && handleSelectMenuItem(nextItem.categoryCode, nextItem.itemCode, nextItem.symbol)}
-                    className="w-12 h-12 rounded-2xl bg-slate-900/90 hover:bg-amber-500/20 hover:border-amber-500/50 border border-slate-700/80 text-slate-300 hover:text-amber-300 shadow-2xl backdrop-blur-md transition-all duration-200 hover:scale-110 active:scale-95 flex items-center justify-center cursor-pointer z-10"
+                    className="w-10 h-10 rounded-xl bg-slate-900/90 hover:bg-amber-500/20 hover:border-amber-500/50 border border-slate-700/80 text-slate-300 hover:text-amber-300 shadow-2xl backdrop-blur-md transition-all duration-200 hover:scale-110 active:scale-95 flex items-center justify-center cursor-pointer z-10"
                     title={`다음 지표: ${nextItem?.title}`}
                   >
-                    <ChevronRight className="w-6 h-6 text-amber-400" />
+                    <ChevronRight className="w-5 h-5 text-amber-400" />
                   </button>
                 ) : null}
               </div>
+            </div>
+          )}
+
+          {/* 모바일 전용 하단 고정 지표 네비게이터 바 (화면 < 1024px, HOME 제외) */}
+          {activeCategory !== 'HOME' && (
+            <div className="lg:hidden fixed bottom-0 left-0 right-0 z-40 bg-slate-900/95 border-t border-slate-800 px-3 py-2.5 backdrop-blur-md flex items-center justify-between gap-2 shadow-2xl shadow-slate-950">
+              <button
+                disabled={!hasPrev}
+                onClick={() => prevItem && handleSelectMenuItem(prevItem.categoryCode, prevItem.itemCode, prevItem.symbol)}
+                className={`flex-1 py-2.5 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1 transition ${
+                  hasPrev
+                    ? 'bg-slate-800 text-amber-300 border border-slate-700 hover:bg-slate-700 active:scale-95'
+                    : 'opacity-30 bg-slate-950 text-slate-600 border border-slate-800 cursor-not-allowed'
+                }`}
+              >
+                <ChevronLeft className="w-4 h-4" />
+                <span className="truncate">{prevItem ? '이전 지표' : '첫 지표'}</span>
+              </button>
+
+              <button
+                onClick={() => setIsMobileMenuOpen(true)}
+                className="px-3.5 py-2.5 rounded-xl text-xs font-extrabold bg-gradient-to-r from-amber-500 to-amber-600 text-slate-950 shadow-md flex items-center gap-1.5 shrink-0 active:scale-95 transition"
+              >
+                <Menu className="w-4 h-4" />
+                <span>지표 메뉴</span>
+              </button>
+
+              <button
+                disabled={!hasNext}
+                onClick={() => nextItem && handleSelectMenuItem(nextItem.categoryCode, nextItem.itemCode, nextItem.symbol)}
+                className={`flex-1 py-2.5 px-3 rounded-xl text-xs font-bold flex items-center justify-center gap-1 transition ${
+                  hasNext
+                    ? 'bg-slate-800 text-amber-300 border border-slate-700 hover:bg-slate-700 active:scale-95'
+                    : 'opacity-30 bg-slate-950 text-slate-600 border border-slate-800 cursor-not-allowed'
+                }`}
+              >
+                <span className="truncate">{nextItem ? '다음 지표' : '마지막'}</span>
+                <ChevronRight className="w-4 h-4" />
+              </button>
             </div>
           )}
         </main>
@@ -2369,3 +3102,4 @@ export function App() {
 }
 
 export default App;
+

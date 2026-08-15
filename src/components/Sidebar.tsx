@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Home, Activity, Briefcase, Globe, Layers, ChevronDown, ChevronRight, Bug, Mail, Copy, Check } from 'lucide-react';
+import { Home, Activity, Briefcase, Globe, Layers, ChevronDown, ChevronRight, Bug, Mail, Copy, Check, X, Sun, Moon } from 'lucide-react';
 import { getMenuTree } from '../api/menu';
 import type { MenuCategory } from '../api/menu';
 
@@ -7,6 +7,10 @@ interface SidebarProps {
   activeCategory: string;
   activeItemCode: string;
   onSelectMenuItem: (categoryCode: string, itemCode: string, targetSymbol?: string) => void;
+  isMobileOpen?: boolean;
+  onCloseMobile?: () => void;
+  theme: 'dark' | 'light';
+  onToggleTheme: () => void;
 }
 
 const ICON_MAP: Record<string, any> = {
@@ -16,7 +20,7 @@ const ICON_MAP: Record<string, any> = {
   STOCK: Layers,
 };
 
-export function Sidebar({ activeCategory, activeItemCode, onSelectMenuItem }: SidebarProps) {
+export function Sidebar({ activeCategory, activeItemCode, onSelectMenuItem, isMobileOpen, onCloseMobile, theme, onToggleTheme }: SidebarProps) {
   const [categories, setCategories] = useState<MenuCategory[]>([]);
   const [copiedEmail, setCopiedEmail] = useState(false);
   const [openCategories, setOpenCategories] = useState<Record<string, boolean>>({
@@ -37,6 +41,13 @@ export function Sidebar({ activeCategory, activeItemCode, onSelectMenuItem }: Si
       ...prev,
       [catCode]: !prev[catCode],
     }));
+  };
+
+  const handleItemClick = (categoryCode: string, itemCode: string, targetSymbol?: string) => {
+    onSelectMenuItem(categoryCode, itemCode, targetSymbol);
+    if (onCloseMobile) {
+      onCloseMobile();
+    }
   };
 
   const defaultMenuStructure = [
@@ -86,18 +97,28 @@ export function Sidebar({ activeCategory, activeItemCode, onSelectMenuItem }: Si
 
   const menuList = categories.length > 0 ? categories : (defaultMenuStructure as any[]);
 
-  return (
-    <aside className="w-64 bg-slate-900/60 border-r border-slate-800 flex flex-col shrink-0 min-h-[calc(100vh-4rem)]">
-      <div className="p-4 border-b border-slate-800/80">
+  const renderContent = () => (
+    <>
+      <div className="p-4 border-b border-slate-800/80 flex items-center justify-between">
         <h2 className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
           지표 메뉴 탐색
         </h2>
+        {/* 모바일 닫기 버튼 */}
+        {onCloseMobile && (
+          <button
+            onClick={onCloseMobile}
+            className="lg:hidden p-1.5 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-white transition cursor-pointer"
+            aria-label="메뉴 닫기"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        )}
       </div>
 
       <nav className="flex-1 p-3 space-y-2 overflow-y-auto">
         {/* HOME 메뉴 */}
         <button
-          onClick={() => onSelectMenuItem('HOME', 'HOME')}
+          onClick={() => handleItemClick('HOME', 'HOME')}
           className={`w-full flex items-center justify-between px-3 py-2.5 rounded-xl text-sm font-medium transition ${
             activeCategory === 'HOME'
               ? 'bg-amber-500/10 text-amber-400 border border-amber-500/30'
@@ -147,7 +168,7 @@ export function Sidebar({ activeCategory, activeItemCode, onSelectMenuItem }: Si
                       <div
                         key={item.id || item.item_code}
                         onClick={() =>
-                          onSelectMenuItem(cat.category_code, item.item_code, item.target_symbol)
+                          handleItemClick(cat.category_code, item.item_code, item.target_symbol)
                         }
                         className={`text-xs px-3 py-2 rounded-lg cursor-pointer transition font-medium flex items-center justify-between ${
                           isItemActive
@@ -165,6 +186,27 @@ export function Sidebar({ activeCategory, activeItemCode, onSelectMenuItem }: Si
           );
         })}
       </nav>
+
+      {/* 라이트 / 다크 테마 전환 토글 버튼 */}
+      <div className="px-3 pt-2">
+        <button
+          onClick={onToggleTheme}
+          className="w-full flex items-center justify-center space-x-2 py-2.5 px-3 rounded-xl text-xs font-bold transition bg-slate-800/90 light:bg-slate-200/90 hover:bg-slate-700 light:hover:bg-slate-300 text-slate-200 light:text-slate-800 border border-slate-700 light:border-slate-300 shadow-sm cursor-pointer"
+          title="라이트/다크 테마 모드 전환"
+        >
+          {theme === 'dark' ? (
+            <>
+              <Sun className="w-4 h-4 text-amber-400" />
+              <span>☀️ 라이트 모드로 전환</span>
+            </>
+          ) : (
+            <>
+              <Moon className="w-4 h-4 text-indigo-400" />
+              <span>🌙 다크 모드로 전환</span>
+            </>
+          )}
+        </button>
+      </div>
 
       {/* 버그 제보 안내 카드 */}
       <div className="p-3.5 m-3 bg-slate-950/80 rounded-2xl border border-slate-800 space-y-2">
@@ -211,6 +253,32 @@ export function Sidebar({ activeCategory, activeItemCode, onSelectMenuItem }: Si
           </button>
         </div>
       </div>
-    </aside>
+    </>
+  );
+
+  return (
+    <>
+      {/* 1. PC 데스크탑 고정 사이드바 (화면 >= 1024px) */}
+      <aside className="hidden lg:flex w-64 bg-slate-900/60 border-r border-slate-800 flex-col shrink-0 min-h-[calc(100vh-4rem)]">
+        {renderContent()}
+      </aside>
+
+      {/* 2. 모바일 슬라이드 드로어 사이드바 (화면 < 1024px) */}
+      {isMobileOpen && (
+        <div className="fixed inset-0 z-50 lg:hidden flex">
+          {/* 어두운 배경 오버레이 (클릭 시 닫힘) */}
+          <div
+            onClick={onCloseMobile}
+            className="fixed inset-0 bg-slate-950/80 backdrop-blur-sm transition-opacity"
+          />
+
+          {/* 슬라이드 드로어 본체 */}
+          <div className="relative w-72 max-w-[82vw] bg-slate-900 border-r border-slate-800 h-full flex flex-col z-10 shadow-2xl animate-fadeIn">
+            {renderContent()}
+          </div>
+        </div>
+      )}
+    </>
   );
 }
+

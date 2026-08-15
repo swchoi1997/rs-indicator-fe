@@ -1,58 +1,49 @@
 import { useState } from 'react';
-import { TrendingUp, Sun, Moon, Bug, Mail, Copy, Check, X } from 'lucide-react';
+import { TrendingUp, Bug, Mail, Copy, Check, X, Menu } from 'lucide-react';
 
 interface HeaderProps {
-  theme: 'dark' | 'light';
-  onToggleTheme: () => void;
+  onToggleMobileMenu?: () => void;
+  isMobileMenuOpen?: boolean;
 }
 
-export function Header({ theme, onToggleTheme }: HeaderProps) {
+export function Header({ onToggleMobileMenu, isMobileMenuOpen }: HeaderProps) {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [copied, setCopied] = useState(false);
 
   return (
     <>
-      <header className="h-16 bg-slate-900/90 dark:bg-slate-900/90 light:bg-white border-b border-slate-800 dark:border-slate-800 light:border-slate-200 backdrop-blur-md px-6 flex items-center justify-between sticky top-0 z-50 transition-colors">
-        <div className="flex items-center space-x-3">
-          <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-amber-500 via-rose-500 to-indigo-600 flex items-center justify-center shadow-md shadow-rose-500/20">
-            <TrendingUp className="w-5 h-5 text-white" />
+      <header className="h-16 bg-slate-900/90 dark:bg-slate-900/90 light:bg-white border-b border-slate-800 dark:border-slate-800 light:border-slate-200 backdrop-blur-md px-3 sm:px-6 flex items-center justify-between sticky top-0 z-50 transition-colors">
+        <div className="flex items-center space-x-2 sm:space-x-3">
+          {/* 모바일 햄버거 메뉴 토글 버튼 (화면 < 1024px 시 노출) */}
+          <button
+            onClick={onToggleMobileMenu}
+            className="lg:hidden p-2 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-amber-400 border border-slate-700/80 transition cursor-pointer shrink-0"
+            aria-label="메뉴 열기/닫기"
+            title="메뉴 열기/닫기"
+          >
+            {isMobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+          </button>
+
+          <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-gradient-to-tr from-amber-500 via-rose-500 to-indigo-600 flex items-center justify-center shadow-md shadow-rose-500/20 shrink-0">
+            <TrendingUp className="w-4 h-4 sm:w-5 sm:h-5 text-white" />
           </div>
-          <div className="flex items-baseline space-x-2">
-            <h1 className="text-xl font-bold font-outfit text-white tracking-wide">
+          <div className="flex items-baseline space-x-1.5 sm:space-x-2">
+            <h1 className="text-sm sm:text-xl font-bold font-outfit text-white tracking-wide truncate">
               R's Indicator Tracker
             </h1>
-            <span className="text-xs text-slate-400 font-medium font-mono">v1.0</span>
+            <span className="text-[10px] sm:text-xs text-slate-400 font-medium font-mono">v1.0</span>
           </div>
         </div>
 
-        <div className="flex items-center space-x-4">
-          {/* 라이트 / 다크 모드 토글 버튼 */}
-          <button
-            onClick={onToggleTheme}
-            className="flex items-center space-x-2 px-3 py-1.5 rounded-xl text-xs font-bold transition bg-slate-800/80 hover:bg-slate-700 text-slate-200 border border-slate-700/80 cursor-pointer shadow-sm"
-            title="라이트/다크 테마 모드 전환"
-          >
-            {theme === 'dark' ? (
-              <>
-                <Sun className="w-4 h-4 text-amber-400" />
-                <span>☀️ 라이트 모드</span>
-              </>
-            ) : (
-              <>
-                <Moon className="w-4 h-4 text-indigo-400" />
-                <span>🌙 다크 모드</span>
-              </>
-            )}
-          </button>
-
+        <div className="flex items-center space-x-2">
           {/* 버그 제보 팝업창 모달 버튼 */}
           <button
             onClick={() => setIsModalOpen(true)}
-            className="flex items-center space-x-1.5 px-3.5 py-1.5 rounded-xl text-xs font-bold bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 transition cursor-pointer shadow-sm"
+            className="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/30 transition cursor-pointer shadow-sm"
             title="버그 제보 및 문의 팝업창 띄우기"
           >
-            <Bug className="w-4 h-4 text-rose-400" />
-            <span className="hidden sm:inline">버그 제보</span>
+            <Bug className="w-4 h-4 text-rose-400 shrink-0" />
+            <span className="hidden xs:inline">버그 제보</span>
           </button>
         </div>
       </header>

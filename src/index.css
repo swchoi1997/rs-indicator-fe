@@ -163,3 +163,26 @@ html.light ::-webkit-scrollbar-thumb {
 ::-webkit-scrollbar-thumb:hover {
   background: #475569;
 }
+
+/* Recharts Legend Mobile Responsive Styling (모바일 전용 수급분석 등 차트 하단 범례 텍스트 축소) */
+@media (max-width: 640px) {
+  .recharts-legend-wrapper {
+    font-size: 9.5px !important;
+    padding-top: 2px !important;
+    bottom: 0px !important;
+  }
+  .recharts-legend-item {
+    margin-right: 6px !important;
+    margin-bottom: 2px !important;
+    display: inline-flex !important;
+    align-items: center !important;
+  }
+  .recharts-legend-item-text {
+    font-size: 9.5px !important;
+    margin-left: 3px !important;
+  }
+  .recharts-legend-wrapper svg {
+    width: 9px !important;
+    height: 9px !important;
+  }
+}
