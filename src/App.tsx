@@ -157,7 +157,7 @@ function MacroCandleChart({
     };
   });
 
-  // 3. 일목균형표
+  // 3. 일목균형표 (선행스팬1 & 선행스팬2는 26기간 미래로 시프트 투영)
   const calcMid = (startIdx: number, length: number) => {
     let maxH = -Infinity;
     let minL = Infinity;
@@ -168,13 +168,34 @@ function MacroCandleChart({
     return (maxH + minL) / 2;
   };
 
-  const ichimokuFull = rawData.map((_, idx) => {
+  const rawSpanA = rawData.map((_, idx) => {
     const tenkan = idx >= 8 ? calcMid(idx - 8, 9) : null;
     const kijun = idx >= 25 ? calcMid(idx - 25, 26) : null;
-    const spanA = tenkan != null && kijun != null ? (tenkan + kijun) / 2 : null;
-    const spanB = idx >= 51 ? calcMid(idx - 51, 52) : null;
-    return { tenkan, kijun, spanA, spanB };
+    return tenkan != null && kijun != null ? (tenkan + kijun) / 2 : null;
   });
+
+  const rawSpanB = rawData.map((_, idx) => {
+    return idx >= 51 ? calcMid(idx - 51, 52) : null;
+  });
+
+  // 선행스팬은 26기간 미래로 시프트 투영되어 미래 26기간까지 구름대 생성
+  const ICHIMOKU_FUTURE_OFFSET = 26;
+  const totalIchimokuLength = rawData.length + ICHIMOKU_FUTURE_OFFSET;
+  const ichimokuFull: { spanA: number | null; spanB: number | null }[] = [];
+  for (let idx = 0; idx < totalIchimokuLength; idx++) {
+    const srcIdx = idx - ICHIMOKU_FUTURE_OFFSET;
+    if (srcIdx >= 0 && srcIdx < rawData.length) {
+      ichimokuFull.push({
+        spanA: rawSpanA[srcIdx],
+        spanB: rawSpanB[srcIdx],
+      });
+    } else {
+      ichimokuFull.push({
+        spanA: null,
+        spanB: null,
+      });
+    }
+  }
 
   // 4. 사용자가 조회하고자 하는 startDate 시점 이후 데이터만 기준 데이터로 슬라이싱
   let baseStartIndex = rawData.findIndex((d) => d.date >= startDate);
@@ -190,17 +211,24 @@ function MacroCandleChart({
   const baseIchimoku = ichimokuFull.slice(baseStartIndex);
 
   const totalCandles = baseData.length;
-  const effectiveStart = viewRange != null ? Math.max(0, Math.min(viewRange.start, Math.max(0, totalCandles - 5))) : 0;
-  const effectiveEnd = viewRange != null ? Math.min(totalCandles - 1, Math.max(viewRange.end, effectiveStart + 4)) : totalCandles - 1;
-  const isZoomed = viewRange != null && (effectiveStart > 0 || effectiveEnd < totalCandles - 1);
+  // 기본 차트에서 현재 시점보다 +1개월(~22영업일/26일) 이후까지 미래 영역 노출
+  const DEFAULT_FUTURE_SLOTS = 22;
+  const futureMarginLimit = Math.max(30, Math.round(totalCandles * 0.3));
+  const maxAllowedEnd = totalCandles - 1 + futureMarginLimit;
 
-  const data = baseData.slice(effectiveStart, effectiveEnd + 1);
-  const ma5 = baseMA5.slice(effectiveStart, effectiveEnd + 1);
-  const ma20 = baseMA20.slice(effectiveStart, effectiveEnd + 1);
-  const ma60 = baseMA60.slice(effectiveStart, effectiveEnd + 1);
-  const ma120 = baseMA120.slice(effectiveStart, effectiveEnd + 1);
-  const ma200 = baseMA200.slice(effectiveStart, effectiveEnd + 1);
-  const bbands = baseBbands.slice(effectiveStart, effectiveEnd + 1);
+  const defaultEnd = totalCandles - 1 + DEFAULT_FUTURE_SLOTS;
+  const effectiveStart = viewRange != null ? Math.max(0, Math.min(viewRange.start, Math.max(0, totalCandles - 5))) : 0;
+  const effectiveEnd = viewRange != null ? Math.min(maxAllowedEnd, Math.max(viewRange.end, effectiveStart + 4)) : defaultEnd;
+  const isZoomed = viewRange != null && (effectiveStart > 0 || effectiveEnd !== defaultEnd);
+  const totalSlots = effectiveEnd - effectiveStart + 1;
+
+  const data = baseData.slice(effectiveStart, Math.min(totalCandles, effectiveEnd + 1));
+  const ma5 = baseMA5.slice(effectiveStart, Math.min(totalCandles, effectiveEnd + 1));
+  const ma20 = baseMA20.slice(effectiveStart, Math.min(totalCandles, effectiveEnd + 1));
+  const ma60 = baseMA60.slice(effectiveStart, Math.min(totalCandles, effectiveEnd + 1));
+  const ma120 = baseMA120.slice(effectiveStart, Math.min(totalCandles, effectiveEnd + 1));
+  const ma200 = baseMA200.slice(effectiveStart, Math.min(totalCandles, effectiveEnd + 1));
+  const bbands = baseBbands.slice(effectiveStart, Math.min(totalCandles, effectiveEnd + 1));
   const ichimoku = baseIchimoku.slice(effectiveStart, effectiveEnd + 1);
 
   // Y축 Min/Max 범위 계산 (캔들 + 활성화된 보조지표 포함)
@@ -230,7 +258,7 @@ function MacroCandleChart({
   if (showIchimoku) {
     ichimoku.forEach((ich) => {
       if (ich) {
-        [ich.tenkan, ich.kijun, ich.spanA, ich.spanB].forEach((v) => {
+        [ich.spanA, ich.spanB].forEach((v) => {
           if (v != null) {
             if (v < allMin) allMin = v;
             if (v > allMax) allMax = v;
@@ -240,24 +268,25 @@ function MacroCandleChart({
     });
   }
 
-  const CHART_FONT = 'system-ui, -apple-system, BlinkMacSystemFont, "Trebuchet MS", "Segoe UI", Roboto, sans-serif';
+  const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' && window.innerWidth < 768);
+
+  useEffect(() => {
+    const handleResize = () => {
+      setIsMobile(window.innerWidth < 768);
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  const CHART_FONT = '"Pretendard", -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Noto Sans KR", "Segoe UI", Roboto, sans-serif';
 
   const chartHeight = 560;
-  const paddingTop = 25;
-  const paddingBottom = 40;
-  const paddingLeft = 20;
-  const paddingRight = 105;
+  const paddingTop = isMobile ? 26 : 22;
+  const paddingBottom = isMobile ? 40 : 34;
+  const paddingLeft = isMobile ? 18 : 20;
+  const paddingRight = isMobile ? 106 : 76;
   const usableHeight = chartHeight - paddingTop - paddingBottom;
   const usableWidth = 1000 - paddingLeft - paddingRight;
-
-  const formatDate = (dStr: string) => {
-    if (!dStr) return '';
-    const clean = dStr.replace(/-/g, '');
-    if (clean.length === 8) {
-      return `${clean.slice(0, 4)}-${clean.slice(4, 6)}-${clean.slice(6, 8)}`;
-    }
-    return dStr;
-  };
 
   const formatDateShort = (dStr: string) => {
     if (!dStr) return '';
@@ -306,7 +335,7 @@ function MacroCandleChart({
   };
 
   const getX = (idx: number) => {
-    const slotWidth = usableWidth / data.length;
+    const slotWidth = usableWidth / totalSlots;
     return paddingLeft + idx * slotWidth + slotWidth / 2;
   };
 
@@ -334,20 +363,31 @@ function MacroCandleChart({
     return 'middle';
   };
 
-  // X축 날짜 눈금 라벨 (7개 균등 분할 추출하여 글자가 서로 겹치는 현상 보정)
-  const maxLabels = 7;
+  // X축 날짜 눈금 라벨 (6개 균등 분할 추출 - 미래 영역 날짜 투영 지원)
+  const maxLabels = 6;
   const labelIndices: number[] = [];
-  if (data.length > 0) {
+  if (totalSlots > 0) {
     for (let k = 0; k < maxLabels; k++) {
       const idx = Math.min(
-        Math.floor((k * (data.length - 1)) / (maxLabels - 1)),
-        data.length - 1
+        Math.floor((k * (totalSlots - 1)) / (maxLabels - 1)),
+        totalSlots - 1
       );
       if (!labelIndices.includes(idx)) {
         labelIndices.push(idx);
       }
     }
   }
+
+  const getLabelDateStr = (slotIdx: number) => {
+    if (slotIdx < data.length) {
+      return formatDateShort(data[slotIdx].date);
+    }
+    const latestDate = baseData[totalCandles - 1]?.date;
+    if (!latestDate) return '';
+    const futureDays = Math.round((slotIdx - (data.length - 1)) * 1.4);
+    const futureDateStr = dayjs(latestDate).add(futureDays, 'day').format('YYYY-MM-DD');
+    return formatDateShort(futureDateStr);
+  };
 
   const [isMouseDown, setIsMouseDown] = useState(false);
   const mouseDragRef = useRef<{
@@ -362,7 +402,7 @@ function MacroCandleChart({
     isDragging: false,
   });
 
-  // 캔들 단위 좌우 패닝 헬퍼
+  // 캔들 단위 좌우 패닝 헬퍼 (미래 여백 이동 지원)
   const panByCandles = (deltaCandles: number) => {
     const visibleCount = effectiveEnd - effectiveStart + 1;
     let newStart = effectiveStart + deltaCandles;
@@ -370,10 +410,10 @@ function MacroCandleChart({
 
     if (newStart < 0) {
       newStart = 0;
-      newEnd = Math.min(totalCandles - 1, newStart + visibleCount - 1);
+      newEnd = Math.min(maxAllowedEnd, newStart + visibleCount - 1);
     }
-    if (newEnd >= totalCandles) {
-      newEnd = totalCandles - 1;
+    if (newEnd > maxAllowedEnd) {
+      newEnd = maxAllowedEnd;
       newStart = Math.max(0, newEnd - visibleCount + 1);
     }
     setViewRange({ start: newStart, end: newEnd });
@@ -394,7 +434,7 @@ function MacroCandleChart({
 
   // 차트 캔버스 마우스 이동 (PC 드래그 패닝 & 실시간 호버 감지)
   const handleMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
-    if (isMouseDown && isZoomed) {
+    if (isMouseDown && (isZoomed || mouseDragRef.current.isDragging)) {
       const deltaX = e.clientX - mouseDragRef.current.startX;
       if (Math.abs(deltaX) > 2) {
         mouseDragRef.current.isDragging = true;
@@ -407,10 +447,10 @@ function MacroCandleChart({
 
         if (newStart < 0) {
           newStart = 0;
-          newEnd = Math.min(totalCandles - 1, newStart + visibleCount - 1);
+          newEnd = Math.min(maxAllowedEnd, newStart + visibleCount - 1);
         }
-        if (newEnd >= totalCandles) {
-          newEnd = totalCandles - 1;
+        if (newEnd > maxAllowedEnd) {
+          newEnd = maxAllowedEnd;
           newStart = Math.max(0, newEnd - visibleCount + 1);
         }
 
@@ -433,9 +473,13 @@ function MacroCandleChart({
     }
 
     const relX = viewBoxX - paddingLeft;
-    const index = Math.floor((relX / usableWidth) * data.length);
-    const clampedIndex = Math.max(0, Math.min(index, data.length - 1));
-    setHoverIndex(clampedIndex);
+    const slotWidth = usableWidth / totalSlots;
+    const index = Math.floor(relX / slotWidth);
+    if (index >= 0 && index < data.length) {
+      setHoverIndex(index);
+    } else {
+      setHoverIndex(null);
+    }
   };
 
   const handleMouseUp = () => {
@@ -460,7 +504,7 @@ function MacroCandleChart({
       };
       setHoverIndex(null);
     } else if (e.touches.length === 1) {
-      // 한 손가락 패닝 시작 (이미 확대된 상태일 때만)
+      // 한 손가락 패닝 시작
       touchRef.current = {
         mode: isZoomed ? 'pan' : 'none',
         initialDistance: 0,
@@ -481,7 +525,7 @@ function MacroCandleChart({
 
       const scale = touchRef.current.initialDistance / currentDist;
       const initialCount = touchRef.current.initialEnd - touchRef.current.initialStart + 1;
-      const newCount = Math.max(5, Math.min(totalCandles, Math.round(initialCount * scale)));
+      const newCount = Math.max(5, Math.min(totalCandles + futureMarginLimit, Math.round(initialCount * scale)));
 
       const center = (touchRef.current.initialStart + touchRef.current.initialEnd) / 2;
       let newStart = Math.round(center - newCount / 2);
@@ -489,10 +533,10 @@ function MacroCandleChart({
 
       if (newStart < 0) {
         newStart = 0;
-        newEnd = Math.min(totalCandles - 1, newStart + newCount - 1);
+        newEnd = Math.min(maxAllowedEnd, newStart + newCount - 1);
       }
-      if (newEnd >= totalCandles) {
-        newEnd = totalCandles - 1;
+      if (newEnd > maxAllowedEnd) {
+        newEnd = maxAllowedEnd;
         newStart = Math.max(0, newEnd - newCount + 1);
       }
 
@@ -512,10 +556,10 @@ function MacroCandleChart({
 
         if (newStart < 0) {
           newStart = 0;
-          newEnd = Math.min(totalCandles - 1, newStart + visibleCount - 1);
+          newEnd = Math.min(maxAllowedEnd, newStart + visibleCount - 1);
         }
-        if (newEnd >= totalCandles) {
-          newEnd = totalCandles - 1;
+        if (newEnd > maxAllowedEnd) {
+          newEnd = maxAllowedEnd;
           newStart = Math.max(0, newEnd - visibleCount + 1);
         }
 
@@ -530,9 +574,13 @@ function MacroCandleChart({
       const viewBoxX = (touchX / rect.width) * 1000;
       if (viewBoxX >= paddingLeft && viewBoxX <= 1000 - paddingRight) {
         const relX = viewBoxX - paddingLeft;
-        const index = Math.floor((relX / usableWidth) * data.length);
-        const clampedIndex = Math.max(0, Math.min(index, data.length - 1));
-        setHoverIndex(clampedIndex);
+        const slotWidth = usableWidth / totalSlots;
+        const index = Math.floor(relX / slotWidth);
+        if (index >= 0 && index < data.length) {
+          setHoverIndex(index);
+        } else {
+          setHoverIndex(null);
+        }
       }
     }
   };
@@ -546,7 +594,7 @@ function MacroCandleChart({
     e.preventDefault();
     const zoomFactor = e.deltaY > 0 ? 1.15 : 0.85;
     const currentCount = effectiveEnd - effectiveStart + 1;
-    const newCount = Math.max(5, Math.min(totalCandles, Math.round(currentCount * zoomFactor)));
+    const newCount = Math.max(5, Math.min(totalCandles + futureMarginLimit, Math.round(currentCount * zoomFactor)));
 
     const rect = e.currentTarget.getBoundingClientRect();
     const mouseX = e.clientX - rect.left;
@@ -559,10 +607,10 @@ function MacroCandleChart({
 
     if (newStart < 0) {
       newStart = 0;
-      newEnd = Math.min(totalCandles - 1, newStart + newCount - 1);
+      newEnd = Math.min(maxAllowedEnd, newStart + newCount - 1);
     }
-    if (newEnd >= totalCandles) {
-      newEnd = totalCandles - 1;
+    if (newEnd > maxAllowedEnd) {
+      newEnd = maxAllowedEnd;
       newStart = Math.max(0, newEnd - newCount + 1);
     }
 
@@ -607,11 +655,11 @@ function MacroCandleChart({
     return d;
   };
 
-  // 일목균형표 양구름 (Green) / 음구름 (Red) 동적 세그먼트 생성
+  // 일목균형표 양구름 (Green) / 음구름 (Red) 동적 세그먼트 생성 (미래 영역까지 확장)
   const createCloudSegments = () => {
     const segments: { path: string; isBullish: boolean }[] = [];
 
-    for (let i = 1; i < data.length; i++) {
+    for (let i = 1; i < ichimoku.length; i++) {
       const ichPrev = ichimoku[i - 1];
       const ichCurr = ichimoku[i];
 
@@ -642,16 +690,24 @@ function MacroCandleChart({
 
   const formatVal = (v: number | null | undefined) => {
     if (v == null || isNaN(v)) return '-';
-    if (symbol === 'USDKRW' || /^\d{6}$/.test(symbol)) return `${Number(v).toLocaleString()} 원`;
-    if (symbol === 'US10Y' || symbol === 'KR_BOND_3Y' || symbol === 'KR3Y') return `${Number(v)} %`;
-    if (symbol === 'WTI') return `$ ${Number(v)}`;
+    // 소수점 3번째 자리에서 반올림하여 최대 2자리까지 표출
+    const rounded = Math.round(v * 100) / 100;
+    if (symbol === 'USDKRW' || /^\d{6}$/.test(symbol)) {
+      return `${rounded.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })} 원`;
+    }
+    if (symbol === 'US10Y' || symbol === 'KR_BOND_3Y' || symbol === 'KR3Y') {
+      return `${rounded.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} %`;
+    }
+    if (symbol === 'WTI') {
+      return `$ ${rounded.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    }
     if (symbol === 'NASDAQ' || symbol === 'S&P500' || symbol === '^IXIC' || symbol === '^GSPC') {
-      return `$ ${Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+      return `$ ${rounded.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     }
     if (symbol === 'KOSPI' || symbol === 'KOSDAQ') {
-      return `${Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} pt`;
+      return `${rounded.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} pt`;
     }
-    return `${Number(v).toLocaleString()}`;
+    return `${rounded.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
   };
 
 
@@ -790,12 +846,12 @@ function MacroCandleChart({
           </label>
 
           {/* 3. 일목균형표 (옵션) */}
-          <label className="flex items-center space-x-1.5 cursor-pointer bg-slate-900 px-2.5 py-1 rounded-lg border border-slate-700/80 hover:border-emerald-500/50 transition">
+          <label className="flex items-center space-x-1.5 cursor-pointer bg-slate-900 px-2.5 py-1 rounded-lg border border-slate-700/80 hover:border-rose-500/50 transition">
             <input
               type="checkbox"
               checked={showIchimoku}
               onChange={(e) => setShowIchimoku(e.target.checked)}
-              className="rounded text-emerald-400 focus:ring-0 bg-slate-950 border-slate-700 cursor-pointer"
+              className="rounded text-rose-400 focus:ring-0 bg-slate-950 border-slate-700 cursor-pointer"
             />
             <span className="font-bold text-slate-200 text-xs">일목균형표 (구름대)</span>
           </label>
@@ -815,12 +871,8 @@ function MacroCandleChart({
 
           {showIchimoku && (
             <div className="flex items-center space-x-2 text-[10.5px] font-mono text-slate-300 bg-slate-900/80 px-2 py-0.5 rounded-lg border border-slate-800">
-              <span className="flex items-center gap-1"><span className="w-2.5 h-1 bg-[#3B82F6] rounded-full inline-block"></span>전환선(9)</span>
-              <span className="flex items-center gap-1"><span className="w-2.5 h-1 bg-[#F59E0B] rounded-full inline-block"></span>기준선(26)</span>
-              <span className="flex items-center gap-1"><span className="w-2.5 h-1 bg-[#10B981] rounded-full inline-block"></span>선행1</span>
-              <span className="flex items-center gap-1"><span className="w-2.5 h-1 bg-[#F43F5E] rounded-full inline-block"></span>선행2</span>
-              <span className="flex items-center gap-1"><span className="w-2.5 h-1.5 bg-emerald-500/30 border border-emerald-500/50 rounded inline-block"></span>양구름</span>
-              <span className="flex items-center gap-1"><span className="w-2.5 h-1.5 bg-rose-500/30 border border-rose-500/50 rounded inline-block"></span>음구름</span>
+              <span className="flex items-center gap-1"><span className="w-2.5 h-1.5 bg-rose-500/40 border border-rose-500/60 rounded inline-block"></span><span className="text-rose-400 font-medium">양구름</span></span>
+              <span className="flex items-center gap-1"><span className="w-2.5 h-1.5 bg-blue-500/40 border border-blue-500/60 rounded inline-block"></span><span className="text-blue-400 font-medium">음구름</span></span>
             </div>
           )}
         </div>
@@ -847,9 +899,9 @@ function MacroCandleChart({
             </span>
             <button
               onClick={() => panByCandles(Math.max(1, Math.round((effectiveEnd - effectiveStart) * 0.25)))}
-              disabled={effectiveEnd >= totalCandles - 1}
+              disabled={effectiveEnd >= maxAllowedEnd}
               className={`p-1 rounded-md border transition ${
-                effectiveEnd >= totalCandles - 1
+                effectiveEnd >= maxAllowedEnd
                   ? 'opacity-30 border-slate-800 text-slate-600 cursor-not-allowed'
                   : 'bg-slate-800/90 hover:bg-slate-700 text-amber-300 border-slate-700 cursor-pointer active:scale-95'
               }`}
@@ -895,16 +947,17 @@ function MacroCandleChart({
                 x2={1000 - paddingRight}
                 y2={tick.y}
                 stroke="#334155"
-                strokeDasharray="3 3"
+                strokeDasharray="2 2"
+                strokeWidth="0.8"
               />
               <text
                 x={1000 - paddingRight + 6}
-                y={tick.y + 3.5}
-                fill="#94A3B8"
-                fontSize="9.5"
-                fontWeight="400"
+                y={tick.y + (isMobile ? 5 : 3.5)}
+                fill="#CBD5E1"
+                fontSize={isMobile ? "17.5" : "10.5"}
+                fontWeight={isMobile ? "500" : "400"}
                 fontFamily={CHART_FONT}
-                style={{ letterSpacing: '-0.3px' }}
+                style={{ letterSpacing: '-0.2px' }}
                 textAnchor="start"
               >
                 {formatVal(tick.val)}
@@ -912,21 +965,17 @@ function MacroCandleChart({
             </g>
           ))}
 
-          {/* 일목균형표 선명한 양구름(Green) & 음구름(Red) 듀얼 Cloud Fill & 선행스팬 테두리 */}
+          {/* 일목균형표 빨간색(양구름) & 파란색(음구름) 투명 Cloud Fill (선 제거, 미래 26기간까지 확장 렌더링) */}
           {showIchimoku && (
             <g pointerEvents="none">
               {createCloudSegments().map((seg, idx) => (
                 <path
                   key={idx}
                   d={seg.path}
-                  fill={seg.isBullish ? 'rgba(16, 185, 129, 0.28)' : 'rgba(244, 63, 94, 0.28)'}
-                  stroke={seg.isBullish ? 'rgba(16, 185, 129, 0.4)' : 'rgba(244, 63, 94, 0.4)'}
-                  strokeWidth="0.5"
+                  fill={seg.isBullish ? 'rgba(239, 68, 68, 0.22)' : 'rgba(59, 130, 246, 0.22)'}
+                  stroke="none"
                 />
               ))}
-              {/* 선행스팬1 (Emerald) & 선행스팬2 (Rose) 테두리 선 */}
-              <path d={createPathD(ichimoku.map((ich) => (ich ? ich.spanA : null)))} stroke="#10B981" strokeWidth="1.2" fill="none" />
-              <path d={createPathD(ichimoku.map((ich) => (ich ? ich.spanB : null)))} stroke="#F43F5E" strokeWidth="1.2" fill="none" />
             </g>
           )}
 
@@ -962,27 +1011,9 @@ function MacroCandleChart({
             </>
           )}
 
-          {/* 일목균형표 전환선(Blue)/기준선(Amber) Lines */}
-          {showIchimoku && (
-            <g pointerEvents="none">
-              <path
-                d={createPathD(ichimoku.map((ich) => (ich ? ich.tenkan : null)))}
-                stroke="#3B82F6"
-                strokeWidth="1.5"
-                fill="none"
-              />
-              <path
-                d={createPathD(ichimoku.map((ich) => (ich ? ich.kijun : null)))}
-                stroke="#F59E0B"
-                strokeWidth="1.5"
-                fill="none"
-              />
-            </g>
-          )}
-
-          {/* X축 날짜 라벨 (100% 잘림 방지 스마트 앵커링 & 정밀 폰트) */}
+          {/* X축 날짜 라벨 (토스 앱 스타일 - 미래 날짜 투영 지원) */}
           {labelIndices.map((i, k) => {
-            const d = data[i];
+            const dateStr = getLabelDateStr(i);
             const x = getX(i);
             const isFirst = k === 0;
             const isLast = k === labelIndices.length - 1;
@@ -993,22 +1024,22 @@ function MacroCandleChart({
               <text
                 key={i}
                 x={posX}
-                y={chartHeight - 12}
-                fill="#94A3B8"
-                fontSize="9.5"
-                fontWeight="400"
+                y={chartHeight - (isMobile ? 14 : 10)}
+                fill="#CBD5E1"
+                fontSize={isMobile ? "16.5" : "10.5"}
+                fontWeight={isMobile ? "500" : "400"}
                 fontFamily={CHART_FONT}
-                style={{ letterSpacing: '-0.3px' }}
+                style={{ letterSpacing: '-0.2px' }}
                 textAnchor={anchor}
               >
-                {formatDate(d.date)}
+                {dateStr}
               </text>
             );
           })}
 
           {/* 캔들 차트 바 (양봉 Red #EF4444, 음봉 Blue #3B82F6) */}
           {data.map((d, i) => {
-            const slotWidth = usableWidth / data.length;
+            const slotWidth = usableWidth / totalSlots;
             const centerX = getX(i);
             const bodyWidth = Math.max(slotWidth * 0.65, 2.5);
             const candleX = centerX - bodyWidth / 2;
@@ -1050,11 +1081,15 @@ function MacroCandleChart({
             );
           })}
 
-          {/* 현재가 파란 점선 & 우측 Y축 현재가 뱃지 (TradingView 스타일 - 동적 핏팅 직결 정렬) */}
+          {/* 현재가 점선 & 우측 Y축 현재가 뱃지 (토스 앱 스타일) */}
           {currentPrice > 0 && (() => {
             const yCurrent = getY(currentPrice);
             const strVal = formatVal(currentPrice);
-            const badgeWidth = Math.min(Math.max(strVal.length * 6.2 + 10, 52), 84);
+            const isPriceUp = latestCandle && (latestCandle.close >= latestCandle.open);
+            const badgeColor = isPriceUp ? '#F04452' : '#3182F6';
+            const badgeWidth = isMobile
+              ? Math.min(Math.max(strVal.length * 10.5 + 16, 76), 118)
+              : Math.min(Math.max(strVal.length * 6.8 + 10, 52), 84);
             const badgeX = 1000 - paddingRight + 1;
             return (
               <g pointerEvents="none">
@@ -1063,26 +1098,26 @@ function MacroCandleChart({
                   y1={yCurrent}
                   x2={1000 - paddingRight}
                   y2={yCurrent}
-                  stroke="#3B82F6"
+                  stroke={badgeColor}
                   strokeDasharray="2 2"
                   strokeWidth="1.2"
                 />
                 <rect
                   x={badgeX}
-                  y={yCurrent - 8.5}
+                  y={isMobile ? yCurrent - 12.5 : yCurrent - 9}
                   width={badgeWidth}
-                  height="17"
-                  rx="3.5"
-                  fill="#2563EB"
+                  height={isMobile ? "25" : "18"}
+                  rx={isMobile ? "4" : "3"}
+                  fill={badgeColor}
                 />
                 <text
                   x={badgeX + badgeWidth / 2}
-                  y={yCurrent + 3.5}
+                  y={isMobile ? yCurrent + 4.5 : yCurrent + 3.5}
                   fill="#FFFFFF"
-                  fontSize="9.5"
-                  fontWeight="600"
+                  fontSize={isMobile ? "16.5" : "10.5"}
+                  fontWeight="700"
                   fontFamily={CHART_FONT}
-                  style={{ letterSpacing: '-0.3px' }}
+                  style={{ letterSpacing: '-0.2px' }}
                   textAnchor="middle"
                 >
                   {strVal}
@@ -1091,30 +1126,36 @@ function MacroCandleChart({
             );
           })()}
 
-          {/* 최고점 (High) 핀 & 라벨 (Red) - 100% 잘림 방지 스마트 핏팅 */}
+          {/* 최고점 (High) 화살표 & 라벨 (토스 앱 스타일: 156,500원 (-6.0%, 26.07.24) ↓) */}
           {maxCandle && maxCandle.high != null && (() => {
             const x = getX(maxIdx);
             const y = getY(maxCandle.high);
             const anchor = getSmartAnchor(maxIdx);
-            const diffText = `${maxDiffPct >= 0 ? '+' : ''}${maxDiffPct.toFixed(2)}%`;
+            const diffText = `${maxDiffPct >= 0 ? '+' : ''}${maxDiffPct.toFixed(1)}%`;
 
-            // 천장 여백(paddingTop)과 가까우면 라벨을 캔들 아래(y + 20)로 자동 반전
-            const isNearTop = y < paddingTop + 20;
-            const textY = isNearTop ? y + 20 : y - 11;
-            const pinY1 = isNearTop ? y + 2 : y - 2;
-            const pinY2 = isNearTop ? y + 7 : y - 7;
+            // 천장 여백(paddingTop)과 가까우면 라벨을 캔들 아래로 자동 반전
+            const isNearTop = y < paddingTop + (isMobile ? 26 : 18);
+            const textY = isNearTop ? y + (isMobile ? 26 : 18) : y - (isMobile ? 13 : 9);
+            const arrowY = isNearTop ? y + (isMobile ? 10 : 8) : y - 2;
 
             return (
               <g pointerEvents="none">
-                <polygon
-                  points={`${x},${pinY1} ${x - 3.5},${pinY2} ${x + 3.5},${pinY2}`}
-                  fill="#EF4444"
-                />
+                <text
+                  x={x}
+                  y={arrowY}
+                  fill="#F04452"
+                  fontSize={isMobile ? "15" : "10"}
+                  fontWeight="700"
+                  fontFamily={CHART_FONT}
+                  textAnchor="middle"
+                >
+                  {isNearTop ? '↑' : '↓'}
+                </text>
                 <text
                   x={x}
                   y={textY}
-                  fill="#EF4444"
-                  fontSize="9.5"
+                  fill="#F04452"
+                  fontSize={isMobile ? "16.5" : "10.5"}
                   fontWeight="600"
                   fontFamily={CHART_FONT}
                   style={{ letterSpacing: '-0.2px' }}
@@ -1126,30 +1167,36 @@ function MacroCandleChart({
             );
           })()}
 
-          {/* 최저점 (Low) 핀 & 라벨 (Blue) - 100% 잘림 방지 스마트 핏팅 */}
+          {/* 최저점 (Low) 화살표 & 라벨 (토스 앱 스타일: 90,400원 (+62.6%, 26.06.26) ↑) */}
           {minCandle && minCandle.low != null && (() => {
             const x = getX(minIdx);
             const y = getY(minCandle.low);
             const anchor = getSmartAnchor(minIdx);
-            const diffText = `${minDiffPct >= 0 ? '+' : ''}${minDiffPct.toFixed(2)}%`;
+            const diffText = `${minDiffPct >= 0 ? '+' : ''}${minDiffPct.toFixed(1)}%`;
 
-            // 바닥 여백(paddingBottom)과 가까우면 라벨을 캔들 위(y - 11)로 자동 반전
+            // 바닥 여백(paddingBottom)과 가까우면 라벨을 캔들 위로 자동 반전
             const isNearBottom = y > chartHeight - paddingBottom - 25;
-            const textY = isNearBottom ? y - 11 : y + 20;
-            const pinY1 = isNearBottom ? y - 2 : y + 2;
-            const pinY2 = isNearBottom ? y - 7 : y + 7;
+            const textY = isNearBottom ? y - (isMobile ? 13 : 9) : y + (isMobile ? 26 : 18);
+            const arrowY = isNearBottom ? y - 2 : y + (isMobile ? 10 : 8);
 
             return (
               <g pointerEvents="none">
-                <polygon
-                  points={`${x},${pinY1} ${x - 3.5},${pinY2} ${x + 3.5},${pinY2}`}
-                  fill="#3B82F6"
-                />
+                <text
+                  x={x}
+                  y={arrowY}
+                  fill="#3182F6"
+                  fontSize={isMobile ? "15" : "10"}
+                  fontWeight="700"
+                  fontFamily={CHART_FONT}
+                  textAnchor="middle"
+                >
+                  {isNearBottom ? '↓' : '↑'}
+                </text>
                 <text
                   x={x}
                   y={textY}
-                  fill="#3B82F6"
-                  fontSize="9.5"
+                  fill="#3182F6"
+                  fontSize={isMobile ? "16.5" : "10.5"}
                   fontWeight="600"
                   fontFamily={CHART_FONT}
                   style={{ letterSpacing: '-0.2px' }}
@@ -1202,74 +1249,80 @@ function MacroCandleChart({
           })()}
         </svg>
 
-        {/* 마우스 호버 정보 종합 카드 (OHLC + 활성화된 보조지표 실시간 표시 - 화면 이탈 방지 스마트 동적 위치 조정) */}
+        {/* 마우스 호버 정보 카드 (모바일: 좌측 상단 초슬림 미니 카드, 웹: 커서 추적 스마트 카드) */}
         {hoverIndex !== null && hoverIndex >= 0 && hoverIndex < data.length && (() => {
           const d = data[hoverIndex];
           const isUp = d.close >= d.open;
           const isLight = theme === 'light';
 
-          const hoverX = getX(hoverIndex);
-          const isRightHalf = hoverIndex > data.length * 0.55;
-          const cardLeft = isRightHalf
-            ? Math.max(20, hoverX - 280)
-            : Math.min(hoverX + 20, 720);
+          const pct = hoverIndex / (totalSlots - 1 || 1);
+          const isRightHalf = pct > 0.55;
 
           return (
             <div
-              style={{ left: `${cardLeft}px`, top: '16px' }}
-              className={`absolute border rounded-xl p-3 shadow-2xl backdrop-blur-md text-xs space-y-2 min-w-[260px] z-20 pointer-events-none transition-all duration-75 ${
+              style={
+                isMobile
+                  ? undefined
+                  : {
+                      left: isRightHalf
+                        ? `${Math.max(2, pct * 100 - 32)}%`
+                        : `${Math.min(68, pct * 100 + 2)}%`,
+                      top: '12px',
+                    }
+              }
+              className={`absolute ${
+                isMobile
+                  ? 'top-2 left-2 max-w-[195px] p-2 text-[10px] space-y-1'
+                  : 'w-[250px] p-2.5 sm:p-3 text-xs space-y-1.5'
+              } border rounded-xl shadow-xl backdrop-blur-md z-20 pointer-events-none transition-all duration-75 ${
                 isLight
-                  ? 'bg-white/95 border-slate-300 text-slate-900 shadow-slate-400/20'
-                  : 'bg-slate-900/95 border-slate-700/90 text-slate-100'
+                  ? 'bg-white/90 border-slate-300 text-slate-900 shadow-slate-400/20'
+                  : 'bg-slate-900/90 border-slate-700/90 text-slate-100 shadow-slate-950/80'
               }`}
             >
-              <div className={`font-bold pb-1.5 flex items-center justify-between gap-3 border-b ${isLight ? 'text-slate-900 border-slate-200' : 'text-slate-200 border-slate-800'}`}>
-                <span>날짜: {d.date}</span>
-                <span className={`px-1.5 py-0.5 rounded font-extrabold text-[10px] ${isUp ? 'bg-rose-500/20 text-rose-500' : 'bg-blue-500/20 text-blue-500'}`}>
+              <div className={`font-bold pb-0.5 sm:pb-1 flex items-center justify-between gap-1.5 border-b ${isLight ? 'text-slate-900 border-slate-200' : 'text-slate-200 border-slate-800'}`}>
+                <span className="text-[10px] sm:text-xs">날짜: {formatDateShort(d.date)}</span>
+                <span className={`px-1 py-0.2 rounded font-extrabold text-[9px] sm:text-[10px] ${isUp ? 'bg-rose-500/20 text-rose-500' : 'bg-blue-500/20 text-blue-500'}`}>
                   {isUp ? '▲ 양봉' : '▼ 음봉'}
                 </span>
               </div>
 
               {/* OHLC 시가/고가/저가/종가 */}
-              <div className="grid grid-cols-2 gap-x-3 gap-y-1 font-mono text-[11px]">
-                <div><span className={isLight ? 'text-slate-600 font-medium' : 'text-slate-400'}>시가:</span> <span className={isLight ? 'text-slate-900 font-semibold' : 'text-white font-semibold'}>{formatVal(d.open)}</span></div>
-                <div><span className={isLight ? 'text-slate-600 font-medium' : 'text-slate-400'}>고가:</span> <span className="text-rose-500 font-semibold">{formatVal(d.high)}</span></div>
-                <div><span className={isLight ? 'text-slate-600 font-medium' : 'text-slate-400'}>저가:</span> <span className="text-blue-500 font-semibold">{formatVal(d.low)}</span></div>
-                <div><span className={isLight ? 'text-slate-600 font-medium' : 'text-slate-400'}>종가:</span> <span className={isLight ? 'text-amber-600 font-bold' : 'text-amber-400 font-bold'}>{formatVal(d.close)}</span></div>
+              <div className="grid grid-cols-2 gap-x-2 gap-y-0.5 font-mono text-[9px] sm:text-[11px]">
+                <div><span className={isLight ? 'text-slate-600' : 'text-slate-400'}>시:</span> <span className={isLight ? 'text-slate-900 font-semibold' : 'text-white font-semibold'}>{formatVal(d.open)}</span></div>
+                <div><span className={isLight ? 'text-slate-600' : 'text-slate-400'}>고:</span> <span className="text-rose-500 font-semibold">{formatVal(d.high)}</span></div>
+                <div><span className={isLight ? 'text-slate-600' : 'text-slate-400'}>저:</span> <span className="text-blue-500 font-semibold">{formatVal(d.low)}</span></div>
+                <div><span className={isLight ? 'text-slate-600' : 'text-slate-400'}>종:</span> <span className={isLight ? 'text-amber-600 font-bold' : 'text-amber-400 font-bold'}>{formatVal(d.close)}</span></div>
               </div>
 
-              {/* 이동평균선 실시간 값 */}
+              {/* 이동평균선 실시간 값 (소수점 3번째 자리 반올림) */}
               {showMA && (
-                <div className={`border-t pt-1.5 space-y-1 ${isLight ? 'border-slate-200' : 'border-slate-800/80'}`}>
-                  <div className={`text-[10px] font-bold ${isLight ? 'text-slate-700' : 'text-slate-400'}`}>이동평균선 (SMA):</div>
-                  <div className="grid grid-cols-2 gap-x-2 gap-y-0.5 font-mono text-[10px]">
-                    <div className="flex items-center gap-1"><span className="w-2 h-0.5 bg-[#F59E0B]"></span><span className={isLight ? 'text-slate-600' : 'text-slate-400'}>5선:</span><span className={isLight ? 'text-amber-600 font-bold' : 'text-amber-300'}>{formatVal(ma5[hoverIndex])}</span></div>
-                    <div className="flex items-center gap-1"><span className="w-2 h-0.5 bg-[#06B6D4]"></span><span className={isLight ? 'text-slate-600' : 'text-slate-400'}>20선:</span><span className={isLight ? 'text-cyan-600 font-bold' : 'text-cyan-300'}>{formatVal(ma20[hoverIndex])}</span></div>
-                    <div className="flex items-center gap-1"><span className="w-2 h-0.5 bg-[#10B981]"></span><span className={isLight ? 'text-slate-600' : 'text-slate-400'}>60선:</span><span className={isLight ? 'text-emerald-600 font-bold' : 'text-emerald-300'}>{formatVal(ma60[hoverIndex])}</span></div>
-                    <div className="flex items-center gap-1"><span className="w-2 h-0.5 bg-[#8B5CF6]"></span><span className={isLight ? 'text-slate-600' : 'text-slate-400'}>120선:</span><span className={isLight ? 'text-purple-600 font-bold' : 'text-purple-300'}>{formatVal(ma120[hoverIndex])}</span></div>
-                    <div className="flex items-center gap-1"><span className="w-2 h-0.5 bg-[#F43F5E]"></span><span className={isLight ? 'text-slate-600' : 'text-slate-400'}>200선:</span><span className={isLight ? 'text-rose-600 font-bold' : 'text-rose-300'}>{formatVal(ma200[hoverIndex])}</span></div>
+                <div className={`border-t pt-0.5 sm:pt-1 space-y-0.5 ${isLight ? 'border-slate-200' : 'border-slate-800/80'}`}>
+                  <div className="grid grid-cols-2 gap-x-1.5 gap-y-0.2 sm:gap-y-0.5 font-mono text-[8.5px] sm:text-[10px]">
+                    <div className="flex items-center gap-1 truncate"><span className="w-1.5 h-0.5 bg-[#F59E0B] shrink-0"></span><span className={isLight ? 'text-slate-600' : 'text-slate-400'}>5:</span><span className="font-bold text-amber-400 truncate">{formatVal(ma5[hoverIndex])}</span></div>
+                    <div className="flex items-center gap-1 truncate"><span className="w-1.5 h-0.5 bg-[#06B6D4] shrink-0"></span><span className={isLight ? 'text-slate-600' : 'text-slate-400'}>20:</span><span className="font-bold text-cyan-300 truncate">{formatVal(ma20[hoverIndex])}</span></div>
+                    <div className="flex items-center gap-1 truncate"><span className="w-1.5 h-0.5 bg-[#10B981] shrink-0"></span><span className={isLight ? 'text-slate-600' : 'text-slate-400'}>60:</span><span className="font-bold text-emerald-300 truncate">{formatVal(ma60[hoverIndex])}</span></div>
+                    <div className="flex items-center gap-1 truncate"><span className="w-1.5 h-0.5 bg-[#8B5CF6] shrink-0"></span><span className={isLight ? 'text-slate-600' : 'text-slate-400'}>120:</span><span className="font-bold text-purple-300 truncate">{formatVal(ma120[hoverIndex])}</span></div>
                   </div>
                 </div>
               )}
 
               {/* 볼린저 밴드 실시간 값 */}
               {showBollinger && bbands[hoverIndex] && (
-                <div className={`border-t pt-1.5 space-y-1 ${isLight ? 'border-slate-200' : 'border-slate-800/80'}`}>
-                  <div className={`text-[10px] font-bold ${isLight ? 'text-cyan-600' : 'text-cyan-400'}`}>볼린저 밴드 (20, 2σ):</div>
-                  <div className="grid grid-cols-2 gap-x-2 gap-y-0.5 font-mono text-[10px]">
-                    <div><span className={isLight ? 'text-slate-600' : 'text-slate-400'}>상한선:</span> <span className={isLight ? 'text-cyan-600 font-bold' : 'text-cyan-300'}>{formatVal(bbands[hoverIndex]?.upper)}</span></div>
-                    <div><span className={isLight ? 'text-slate-600' : 'text-slate-400'}>하한선:</span> <span className={isLight ? 'text-cyan-600 font-bold' : 'text-cyan-300'}>{formatVal(bbands[hoverIndex]?.lower)}</span></div>
+                <div className={`border-t pt-0.5 sm:pt-1 space-y-0.5 ${isLight ? 'border-slate-200' : 'border-slate-800/80'}`}>
+                  <div className="grid grid-cols-2 gap-x-1.5 gap-y-0.5 font-mono text-[8.5px] sm:text-[10px]">
+                    <div><span className={isLight ? 'text-slate-600' : 'text-slate-400'}>상:</span> <span className="font-bold text-cyan-300">{formatVal(bbands[hoverIndex]?.upper)}</span></div>
+                    <div><span className={isLight ? 'text-slate-600' : 'text-slate-400'}>하:</span> <span className="font-bold text-cyan-300">{formatVal(bbands[hoverIndex]?.lower)}</span></div>
                   </div>
                 </div>
               )}
 
               {/* 일목균형표 실시간 값 */}
               {showIchimoku && ichimoku[hoverIndex] && (
-                <div className={`border-t pt-1.5 space-y-1 ${isLight ? 'border-slate-200' : 'border-slate-800/80'}`}>
-                  <div className={`text-[10px] font-bold ${isLight ? 'text-emerald-600' : 'text-emerald-400'}`}>일목균형표:</div>
-                  <div className="grid grid-cols-2 gap-x-2 gap-y-0.5 font-mono text-[10px]">
-                    <div><span className={isLight ? 'text-slate-600' : 'text-slate-400'}>전환선(9):</span> <span className="text-blue-500 font-bold">{formatVal(ichimoku[hoverIndex]?.tenkan)}</span></div>
-                    <div><span className={isLight ? 'text-slate-600' : 'text-slate-400'}>기준선(26):</span> <span className="text-amber-600 font-bold">{formatVal(ichimoku[hoverIndex]?.kijun)}</span></div>
+                <div className={`border-t pt-0.5 sm:pt-1 space-y-0.5 ${isLight ? 'border-slate-200' : 'border-slate-800/80'}`}>
+                  <div className="grid grid-cols-2 gap-x-1.5 gap-y-0.5 font-mono text-[8.5px] sm:text-[10px]">
+                    <div><span className={isLight ? 'text-slate-600' : 'text-slate-400'}>선행1:</span> <span className="font-bold text-emerald-400">{formatVal(ichimoku[hoverIndex]?.spanA)}</span></div>
+                    <div><span className={isLight ? 'text-slate-600' : 'text-slate-400'}>선행2:</span> <span className="font-bold text-rose-400">{formatVal(ichimoku[hoverIndex]?.spanB)}</span></div>
                   </div>
                 </div>
               )}
@@ -1292,10 +1345,8 @@ function MacroCandleChart({
           )}
           {showIchimoku && (
             <div className="flex items-center gap-1.5 bg-slate-950/80 px-2 py-0.5 rounded-lg border border-slate-800/80 shadow-sm">
-              <span className="flex items-center gap-1"><span className="w-2 h-1 bg-[#3B82F6] rounded-full inline-block"></span>전환(9)</span>
-              <span className="flex items-center gap-1"><span className="w-2 h-1 bg-[#F59E0B] rounded-full inline-block"></span>기준(26)</span>
-              <span className="flex items-center gap-1"><span className="w-2 h-1 bg-[#10B981] rounded-full inline-block"></span>선행1</span>
-              <span className="flex items-center gap-1"><span className="w-2 h-1 bg-[#F43F5E] rounded-full inline-block"></span>선행2</span>
+              <span className="flex items-center gap-1"><span className="w-2.5 h-1.5 bg-rose-500/40 border border-rose-500/60 rounded inline-block"></span><span className="text-rose-400 font-medium">양구름</span></span>
+              <span className="flex items-center gap-1"><span className="w-2.5 h-1.5 bg-blue-500/40 border border-blue-500/60 rounded inline-block"></span><span className="text-blue-400 font-medium">음구름</span></span>
             </div>
           )}
         </div>
@@ -2115,8 +2166,8 @@ export function App() {
                         <ResponsiveContainer width="100%" height="100%">
                           <LineChart data={cumInvestorData}>
                             <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                            <XAxis dataKey="dt" stroke="#94A3B8" fontSize={12} />
-                            <YAxis stroke="#94A3B8" fontSize={12} tickFormatter={formatYAxisCurrency} />
+                            <XAxis dataKey="dt" stroke="#CBD5E1" fontSize={13} tick={{ fill: '#CBD5E1', fontSize: 13 }} />
+                            <YAxis stroke="#CBD5E1" fontSize={13} tick={{ fill: '#CBD5E1', fontSize: 13 }} tickFormatter={formatYAxisCurrency} />
                             <Tooltip
                               cursor={false}
                               contentStyle={{
@@ -2219,8 +2270,8 @@ export function App() {
                         <ResponsiveContainer width="100%" height="100%">
                           <LineChart data={cumInvestorData}>
                             <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                            <XAxis dataKey="dt" stroke="#94A3B8" fontSize={12} />
-                            <YAxis stroke="#94A3B8" fontSize={12} tickFormatter={formatYAxisCurrency} />
+                            <XAxis dataKey="dt" stroke="#CBD5E1" fontSize={13} tick={{ fill: '#CBD5E1', fontSize: 13 }} />
+                            <YAxis stroke="#CBD5E1" fontSize={13} tick={{ fill: '#CBD5E1', fontSize: 13 }} tickFormatter={formatYAxisCurrency} />
                             <Tooltip
                               cursor={false}
                               contentStyle={{
@@ -2386,8 +2437,8 @@ export function App() {
                         <ResponsiveContainer width="100%" height="100%">
                           <BarChart data={dailyInvestorData}>
                             <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                            <XAxis dataKey="dt" stroke="#94A3B8" fontSize={12} />
-                            <YAxis stroke="#94A3B8" fontSize={12} tickFormatter={formatYAxisCurrency} />
+                            <XAxis dataKey="dt" stroke="#CBD5E1" fontSize={13} tick={{ fill: '#CBD5E1', fontSize: 13 }} />
+                            <YAxis stroke="#CBD5E1" fontSize={13} tick={{ fill: '#CBD5E1', fontSize: 13 }} tickFormatter={formatYAxisCurrency} />
                             <Tooltip
                               cursor={false}
                               contentStyle={{
@@ -2682,8 +2733,8 @@ export function App() {
                           <ResponsiveContainer width="100%" height="100%">
                             <LineChart data={processedIndexData.filter((d) => d.date >= startDate)}>
                               <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                              <XAxis dataKey="date" stroke="#94A3B8" fontSize={12} />
-                              <YAxis stroke="#94A3B8" fontSize={12} domain={['auto', 'auto']} />
+                              <XAxis dataKey="date" stroke="#CBD5E1" fontSize={13} tick={{ fill: '#CBD5E1', fontSize: 13 }} />
+                              <YAxis stroke="#CBD5E1" fontSize={13} tick={{ fill: '#CBD5E1', fontSize: 13 }} domain={['auto', 'auto']} />
                               <Tooltip
                                 cursor={false}
                                 contentStyle={{ backgroundColor: '#1E293B', borderColor: '#475569', borderRadius: '12px' }}
@@ -2841,8 +2892,8 @@ export function App() {
                           <ResponsiveContainer width="100%" height="100%">
                             <LineChart data={processedMacroData.filter((d) => d.date >= startDate)}>
                               <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                              <XAxis dataKey="date" stroke="#94A3B8" fontSize={12} />
-                              <YAxis stroke="#94A3B8" fontSize={12} domain={['auto', 'auto']} />
+                              <XAxis dataKey="date" stroke="#CBD5E1" fontSize={13} tick={{ fill: '#CBD5E1', fontSize: 13 }} />
+                              <YAxis stroke="#CBD5E1" fontSize={13} tick={{ fill: '#CBD5E1', fontSize: 13 }} domain={['auto', 'auto']} />
                               <Tooltip
                                 cursor={false}
                                 contentStyle={{ backgroundColor: '#1E293B', borderColor: '#475569', borderRadius: '12px' }}
@@ -3022,8 +3073,8 @@ export function App() {
                             <ResponsiveContainer width="100%" height="100%">
                               <LineChart data={processedStockData.filter((d) => d.date >= startDate)}>
                                 <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                                <XAxis dataKey="date" stroke="#94A3B8" fontSize={12} />
-                                <YAxis stroke="#94A3B8" fontSize={12} domain={['auto', 'auto']} />
+                                <XAxis dataKey="date" stroke="#CBD5E1" fontSize={13} tick={{ fill: '#CBD5E1', fontSize: 13 }} />
+                                <YAxis stroke="#CBD5E1" fontSize={13} tick={{ fill: '#CBD5E1', fontSize: 13 }} domain={['auto', 'auto']} />
                                 <Tooltip
                                   cursor={false}
                                   contentStyle={{ backgroundColor: '#1E293B', borderColor: '#475569', borderRadius: '12px' }}
