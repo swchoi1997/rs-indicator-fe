@@ -399,8 +399,8 @@ function MacroCandleChart({
   const formatVal = (v: number | null | undefined) => {
     if (v == null || isNaN(v)) return '-';
     if (symbol === 'USDKRW' || /^\d{6}$/.test(symbol)) return `${Number(v).toLocaleString()} 원`;
-    if (symbol === 'US10Y' || symbol === 'KR_BOND_3Y' || symbol === 'KR3Y') return `${Number(v).toFixed(2)} %`;
-    if (symbol === 'WTI') return `$ ${Number(v).toFixed(2)}`;
+    if (symbol === 'US10Y' || symbol === 'KR_BOND_3Y' || symbol === 'KR3Y') return `${Number(v)} %`;
+    if (symbol === 'WTI') return `$ ${Number(v)}`;
     if (symbol === 'NASDAQ' || symbol === 'S&P500' || symbol === '^IXIC' || symbol === '^GSPC') {
       return `$ ${Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     }
@@ -409,6 +409,7 @@ function MacroCandleChart({
     }
     return `${Number(v).toLocaleString()}`;
   };
+
 
   return (
     <div className="space-y-3">
@@ -1048,12 +1049,13 @@ export function App() {
     if (symbol === 'USDKRW') {
       return `${Number(val).toLocaleString()} 원`;
     } else if (symbol === 'US10Y' || symbol === 'KR_BOND_3Y' || symbol === 'KR3Y') {
-      return `${Number(val).toFixed(2)} %`;
+      return `${Number(val)} %`;
     } else if (symbol === 'WTI') {
-      return `$ ${Number(val).toFixed(2)} / bbl`;
+      return `$ ${Number(val)} / bbl`;
     }
     return `${Number(val).toLocaleString()}`;
   };
+
 
   // 화폐 수급 단위 (1조 이상 '조', 1억 이상 '억' 포맷팅 헬퍼)
   const formatYAxisCurrency = (val: number): string => {
@@ -2104,17 +2106,18 @@ export function App() {
 
                         const formatVal = (v: number) => {
                           if (activeItemCode === 'USDKRW') return `${Number(v).toLocaleString()} 원`;
-                          if (activeItemCode === 'US10Y' || activeItemCode === 'KR_BOND_3Y' || activeItemCode === 'KR3Y') return `${Number(v).toFixed(2)} %`;
-                          if (activeItemCode === 'WTI') return `$ ${Number(v).toFixed(2)} / bbl`;
+                          if (activeItemCode === 'US10Y' || activeItemCode === 'KR_BOND_3Y' || activeItemCode === 'KR3Y') return `${Number(v)} %`;
+                          if (activeItemCode === 'WTI') return `$ ${Number(v)} / bbl`;
                           return `${Number(v).toLocaleString()}`;
                         };
 
                         const formatDiff = (v: number) => {
                           if (activeItemCode === 'USDKRW') return `${v >= 0 ? '+' : ''}${v.toFixed(2)} 원`;
-                          if (activeItemCode === 'US10Y' || activeItemCode === 'KR_BOND_3Y' || activeItemCode === 'KR3Y') return `${v >= 0 ? '+' : ''}${v.toFixed(2)} %p`;
-                          if (activeItemCode === 'WTI') return `${v >= 0 ? '+' : ''}$${v.toFixed(2)}`;
+                          if (activeItemCode === 'US10Y' || activeItemCode === 'KR_BOND_3Y' || activeItemCode === 'KR3Y') return `${v >= 0 ? '+' : ''}${Number(v.toFixed(4))} %p`;
+                          if (activeItemCode === 'WTI') return `${v >= 0 ? '+' : ''}$${Number(v.toFixed(4))}`;
                           return `${v >= 0 ? '+' : ''}${v.toFixed(2)}`;
                         };
+
 
                         return (
                           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-4 bg-slate-950/80 rounded-xl border border-slate-800 font-sans">
