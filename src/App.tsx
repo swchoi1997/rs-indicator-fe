@@ -690,13 +690,15 @@ function MacroCandleChart({
 
   const formatVal = (v: number | null | undefined) => {
     if (v == null || isNaN(v)) return '-';
-    // 소수점 3번째 자리에서 반올림하여 최대 2자리까지 표출
+    // 국고채 3년물 및 미국채 10년물은 소수점 셋째 자리까지 고정 표출
+    if (symbol === 'US10Y' || symbol === 'KR_BOND_3Y' || symbol === 'KR3Y') {
+      const roundedBond = Math.round(v * 1000) / 1000;
+      return `${roundedBond.toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 })} %`;
+    }
+    // 그 외 지표는 소수점 3번째 자리에서 반올림하여 최대 2자리까지 표출
     const rounded = Math.round(v * 100) / 100;
     if (symbol === 'USDKRW' || /^\d{6}$/.test(symbol)) {
       return `${rounded.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })} 원`;
-    }
-    if (symbol === 'US10Y' || symbol === 'KR_BOND_3Y' || symbol === 'KR3Y') {
-      return `${rounded.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} %`;
     }
     if (symbol === 'WTI') {
       return `$ ${rounded.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -1521,7 +1523,8 @@ export function App() {
     if (symbol === 'USDKRW') {
       return `${Number(val).toLocaleString()} 원`;
     } else if (symbol === 'US10Y' || symbol === 'KR_BOND_3Y' || symbol === 'KR3Y') {
-      return `${Number(val)} %`;
+      const rounded = Math.round(val * 1000) / 1000;
+      return `${rounded.toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 })} %`;
     } else if (symbol === 'WTI') {
       return `$ ${Number(val)} / bbl`;
     }
@@ -2831,14 +2834,20 @@ export function App() {
 
                         const formatVal = (v: number) => {
                           if (activeItemCode === 'USDKRW') return `${Number(v).toLocaleString()} 원`;
-                          if (activeItemCode === 'US10Y' || activeItemCode === 'KR_BOND_3Y' || activeItemCode === 'KR3Y') return `${Number(v)} %`;
+                          if (activeItemCode === 'US10Y' || activeItemCode === 'KR_BOND_3Y' || activeItemCode === 'KR3Y') {
+                            const rounded = Math.round(v * 1000) / 1000;
+                            return `${rounded.toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 })} %`;
+                          }
                           if (activeItemCode === 'WTI') return `$ ${Number(v)} / bbl`;
                           return `${Number(v).toLocaleString()}`;
                         };
 
                         const formatDiff = (v: number) => {
                           if (activeItemCode === 'USDKRW') return `${v >= 0 ? '+' : ''}${v.toFixed(2)} 원`;
-                          if (activeItemCode === 'US10Y' || activeItemCode === 'KR_BOND_3Y' || activeItemCode === 'KR3Y') return `${v >= 0 ? '+' : ''}${Number(v.toFixed(4))} %p`;
+                          if (activeItemCode === 'US10Y' || activeItemCode === 'KR_BOND_3Y' || activeItemCode === 'KR3Y') {
+                            const rounded = Math.round(v * 1000) / 1000;
+                            return `${v >= 0 ? '+' : ''}${rounded.toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 })} %p`;
+                          }
                           if (activeItemCode === 'WTI') return `${v >= 0 ? '+' : ''}$${Number(v.toFixed(4))}`;
                           return `${v >= 0 ? '+' : ''}${v.toFixed(2)}`;
                         };
@@ -2893,7 +2902,13 @@ export function App() {
                             <LineChart data={processedMacroData.filter((d) => d.date >= startDate)}>
                               <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
                               <XAxis dataKey="date" stroke="#CBD5E1" fontSize={13} tick={{ fill: '#CBD5E1', fontSize: 13 }} />
-                              <YAxis stroke="#CBD5E1" fontSize={13} tick={{ fill: '#CBD5E1', fontSize: 13 }} domain={['auto', 'auto']} />
+                              <YAxis
+                                stroke="#CBD5E1"
+                                fontSize={13}
+                                tick={{ fill: '#CBD5E1', fontSize: 13 }}
+                                domain={['auto', 'auto']}
+                                tickFormatter={(v) => (activeItemCode === 'US10Y' || activeItemCode === 'KR_BOND_3Y' || activeItemCode === 'KR3Y' ? `${Number(v).toFixed(3)}%` : String(v))}
+                              />
                               <Tooltip
                                 cursor={false}
                                 contentStyle={{ backgroundColor: '#1E293B', borderColor: '#475569', borderRadius: '12px' }}
