@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import {
   TrendingUp,
   Activity,
@@ -22,6 +22,7 @@ import {
   getIndexCandles,
   getInvestorNet,
   getInvestorNetCumulative,
+  getInvestorDailyNet,
   getMacroIndicators,
   getTrackedStocks,
   getStockCandles,
@@ -30,6 +31,7 @@ import type {
   MarketIndexCandle,
   InvestorNetDailyItem,
   InvestorNetCumulativeItem,
+  InvestorDailyNetItem,
   MacroIndicatorItem,
   TrackedStock,
   StockCandle,
@@ -1365,10 +1367,11 @@ function MacroCandleChart({
 
 // 전체 메뉴 순차 순서 정의 (수급분석 -> 거시경제 -> 시장지수 -> 관심종목)
 const ORDERED_MENU_ITEMS: FlatMenuItem[] = [
-  // 수급 분석 (1, 2, 3)
+  // 수급 분석 (1, 2, 3, 4)
   { categoryCode: 'INVESTOR', itemCode: 'FOREIGNER_2Y_CUM', symbol: 'FOREIGNER', title: '수급 분석 > 1. 외국인 2년 누적' },
   { categoryCode: 'INVESTOR', itemCode: 'MAIN_3SUB_CUM', symbol: 'FOREIGNER,INDIVIDUAL,INSTITUTION,PENSION', title: '수급 분석 > 2. 외국인, 개인, 기관, 연기금 누적' },
-  { categoryCode: 'INVESTOR', itemCode: 'INVESTOR_NET', symbol: 'ALL', title: '수급 분석 > 3. 주체별 순매수' },
+  { categoryCode: 'INVESTOR', itemCode: 'INVESTOR_DAILY_NET', symbol: 'ALL', title: '수급 분석 > 3. 주체별 순매수 (1일)' },
+  { categoryCode: 'INVESTOR', itemCode: 'INVESTOR_NET', symbol: 'ALL', title: '수급 분석 > 4. 주체별 순매수' },
 
   // 거시 경제
   { categoryCode: 'MACRO', itemCode: 'USDKRW', symbol: 'USDKRW', title: '거시 경제 > 원/달러 환율' },
@@ -1472,12 +1475,35 @@ export function App() {
   const [macroChartType, setMacroChartType] = useState<'bar' | 'line'>('bar');
   const [marketChartType, setMarketChartType] = useState<'bar' | 'line'>('bar');
   const [stockChartType, setStockChartType] = useState<'bar' | 'line'>('bar');
+  const [showForeignerMA4, setShowForeignerMA4] = useState<boolean>(true);
 
   // Data states
   const [dailyInvestorData, setDailyInvestorData] = useState<InvestorNetDailyItem[]>([]);
   const [tableInvestorData, setTableInvestorData] = useState<InvestorNetDailyItem[]>([]);
   const [tablePage, setTablePage] = useState<number>(1);
   const [cumInvestorData, setCumInvestorData] = useState<InvestorNetCumulativeItem[]>([]);
+
+  // 1일 누적 장중 수급 데이터 상태 (tb_investor_daily_net)
+  const [intradayData, setIntradayData] = useState<InvestorDailyNetItem[]>([]);
+  const [intradayMarket, setIntradayMarket] = useState<'KOSPI' | 'KOSDAQ'>('KOSPI');
+  const [intradayDate, setIntradayDate] = useState<string>(() => dayjs().format('YYYY-MM-DD'));
+  const [intradayNotice, setIntradayNotice] = useState<string | null>(null);
+  const isInternalDateSyncRef = useRef<boolean>(false);
+
+  // 1일 누적 장중 차트 X축 30분 단위 눈금(Tick) 필터링
+  const thirtyMinTicks = useMemo(() => {
+    return intradayData
+      .filter((item) => {
+        const raw = item.sync_at || '';
+        const t = raw.includes(' ') ? raw.split(' ')[1] : raw.includes('T') ? raw.split('T')[1] : raw;
+        if (t && t.length >= 5) {
+          const mm = t.slice(3, 5);
+          return mm === '00' || mm === '30';
+        }
+        return false;
+      })
+      .map((item) => item.sync_at);
+  }, [intradayData]);
 
   // 시계열 날짜/시간 포맷팅 헬퍼 (접속한 브라우저의 현지 시간대(한국 접속 시 KST)로 자동 변환)
   const formatUpdateTime = (item: any) => {
@@ -1531,6 +1557,9 @@ export function App() {
   // 실시간 동기화 주기 텍스트 변환 헬퍼
   const getSyncBadgeText = (category: string, itemCode: string) => {
     if (category === 'INVESTOR') {
+      if (itemCode === 'INVESTOR_DAILY_NET') {
+        return '평일 5분 간격 (08:00~20:00)';
+      }
       if (itemCode === 'INVESTOR_NET') {
         return '평일 10분 간격 (마감 확정 16시·18시·20시)';
       }
@@ -1538,7 +1567,7 @@ export function App() {
     }
     if (category === 'MARKET') {
       if (itemCode === 'NASDAQ' || itemCode === 'S&P500' || targetSymbol === '^IXIC' || targetSymbol === '^GSPC') {
-        return '미국 장중 20분 간격 (한국 22:00~06:00)';
+        return '미국 장중 10분 간격 (한국 22:00~06:00)';
       }
       return '평일 15분 간격 (08:00~20:00)';
     }
@@ -1657,7 +1686,23 @@ export function App() {
     setLoading(true);
     try {
       if (activeCategory === 'INVESTOR') {
-        if (activeItemCode === 'INVESTOR_NET') {
+        if (activeItemCode === 'INVESTOR_DAILY_NET') {
+          const apiDt = intradayDate ? intradayDate.replace(/-/g, '') : undefined;
+          const res = await getInvestorDailyNet(intradayMarket, apiDt);
+          setIntradayData(res.items || []);
+          if (res.dt) {
+            const formatted = `${res.dt.slice(0, 4)}-${res.dt.slice(4, 6)}-${res.dt.slice(6, 8)}`;
+            if (formatted !== intradayDate) {
+              isInternalDateSyncRef.current = true;
+              setIntradayDate(formatted);
+            }
+          }
+          if (res.message) {
+            setIntradayNotice(res.message);
+          } else {
+            setIntradayNotice(null);
+          }
+        } else if (activeItemCode === 'INVESTOR_NET') {
           const data = await getInvestorNet(startDate, endDate, 'KOSPI', 'ALL', periodType);
           setDailyInvestorData(data);
 
@@ -1709,8 +1754,12 @@ export function App() {
   };
 
   useEffect(() => {
+    if (isInternalDateSyncRef.current) {
+      isInternalDateSyncRef.current = false;
+      return;
+    }
     fetchData();
-  }, [activeCategory, activeItemCode, targetSymbol, periodType, startDate, endDate]);
+  }, [activeCategory, activeItemCode, targetSymbol, periodType, startDate, endDate, intradayMarket, intradayDate]);
 
   const handleSelectMenuItem = (categoryCode: string, itemCode: string, symbol?: string) => {
     const nextSymbol = symbol || itemCode;
@@ -1759,6 +1808,7 @@ export function App() {
   };
 
   const isFixedWeekly = activeItemCode === 'FOREIGNER_2Y_CUM' || activeItemCode === 'MAIN_3SUB_CUM';
+  const isIntradayDaily = activeItemCode === 'INVESTOR_DAILY_NET';
 
   // 전체 메뉴 순서 인덱스 탐색 및 이전/다음 버튼 정보 계산
   const currentIndex = ORDERED_MENU_ITEMS.findIndex(
@@ -1883,7 +1933,8 @@ export function App() {
                   <span className="font-outfit truncate">
                     {activeItemCode === 'FOREIGNER_2Y_CUM' && '수급 분석 > 1. 외국인 2년 누적 (주봉 고정)'}
                     {activeItemCode === 'MAIN_3SUB_CUM' && '수급 분석 > 2. 외국인, 개인, 기관, 연기금 누적 (주봉 고정)'}
-                    {activeItemCode === 'INVESTOR_NET' && '수급 분석 > 3. 주체별 순매수'}
+                    {activeItemCode === 'INVESTOR_DAILY_NET' && '수급 분석 > 3. 주체별 순매수 (1일 누적)'}
+                    {activeItemCode === 'INVESTOR_NET' && '수급 분석 > 4. 주체별 순매수'}
                     {activeCategory === 'MARKET' && `시장 지수 > ${activeItemCode} (${targetSymbol})`}
                     {activeCategory === 'MACRO' && `거시 경제 > ${activeItemCode} (${targetSymbol})`}
                     {activeCategory === 'STOCK' && `관심 종목 > ${activeItemCode}`}
@@ -1895,6 +1946,10 @@ export function App() {
                   {isFixedWeekly ? (
                     <div className="px-2.5 py-1 rounded-xl bg-slate-950/80 border border-amber-500/30 text-amber-400 text-[11px] font-bold shadow-inner">
                       2년 고정
+                    </div>
+                  ) : isIntradayDaily ? (
+                    <div className="px-2.5 py-1 rounded-xl bg-slate-950/80 border border-emerald-500/30 text-emerald-400 text-[11px] font-bold shadow-inner">
+                      1일 누적
                     </div>
                   ) : (
                     <button
@@ -1912,7 +1967,7 @@ export function App() {
                     <div className="px-2.5 py-1 rounded-xl bg-slate-950/80 border border-amber-500/30 text-amber-400 text-[11px] font-bold shadow-inner">
                       주봉 고정
                     </div>
-                  ) : (
+                  ) : isIntradayDaily ? null : (
                     <div
                       onClick={() => setPeriodType((prev) => (prev === 'D' ? 'W' : 'D'))}
                       className="w-22 sm:w-24 h-7.5 sm:h-8 rounded-full bg-slate-950 border border-slate-700/80 p-0.5 flex items-center justify-between relative cursor-pointer select-none shadow-inner"
@@ -1947,67 +2002,77 @@ export function App() {
                   {/* 달력 조회 기간 피커 & 원터치 퀵 기간 선택 버튼 */}
                   <div className="flex items-center space-x-2 text-xs text-slate-400 bg-slate-950/90 px-3 py-1.5 rounded-xl border border-slate-800">
                     <Calendar className="w-4 h-4 text-amber-400 shrink-0" />
-                    <span className="font-medium">기간:</span>
-                    <input
-                      type="date"
-                      disabled={isFixedWeekly}
-                      value={toInputDate(startDate)}
-                      onChange={(e) => setStartDate(toApiDate(e.target.value))}
-                      className={`bg-slate-900 text-slate-100 text-xs px-2.5 py-1 rounded-lg border border-slate-700 font-mono focus:outline-none focus:border-amber-400 ${
-                        isFixedWeekly ? 'opacity-50 cursor-not-allowed bg-slate-950/50' : 'cursor-pointer'
-                      }`}
-                    />
-                    <span className="text-slate-600">~</span>
-                    <input
-                      type="date"
-                      disabled={isFixedWeekly}
-                      value={toInputDate(endDate)}
-                      onChange={(e) => setEndDate(toApiDate(e.target.value))}
-                      className={`bg-slate-900 text-slate-100 text-xs px-2.5 py-1 rounded-lg border border-slate-700 font-mono focus:outline-none focus:border-amber-400 ${
-                        isFixedWeekly ? 'opacity-50 cursor-not-allowed bg-slate-950/50' : 'cursor-pointer'
-                      }`}
-                    />
-                    {isFixedWeekly ? (
-                      <span className="text-[10px] text-amber-400 font-semibold px-1.5 py-0.5 bg-amber-500/10 rounded border border-amber-500/20">
-                        2년 고정
-                      </span>
-                    ) : (
-                      /* 원터치 퀵 기간 선택 버튼 그룹 */
-                      <div className="flex items-center space-x-1 pl-2 border-l border-slate-800 ml-1">
-                        {(activeItemCode === 'INVESTOR_NET'
-                          ? [
-                              { label: '1일', amount: 1, unit: 'day' },
-                              { label: '3일', amount: 3, unit: 'day' },
-                              { label: '7일', amount: 7, unit: 'day' },
-                              { label: '1달', amount: 1, unit: 'month' },
-                            ]
-                          : [
-                              { label: '1달', amount: 1, unit: 'month' },
-                              { label: '3달', amount: 3, unit: 'month' },
-                              { label: '6달', amount: 6, unit: 'month' },
-                              { label: '1년', amount: 1, unit: 'year' },
-                              { label: '2년', amount: 2, unit: 'year' },
-                            ]
-                        ).map((preset) => {
-                          const targetStart = dayjs().subtract(preset.amount, preset.unit as any).format('YYYYMMDD');
-                          const todayEnd = dayjs().format('YYYYMMDD');
-                          const isActive = startDate === targetStart && endDate === todayEnd;
-
-                          return (
-                            <button
-                              key={preset.label}
-                              onClick={() => handleQuickPeriodSelect(preset.amount, preset.unit as any)}
-                              className={`px-2 py-0.5 rounded text-[11px] font-bold transition cursor-pointer ${
-                                isActive
-                                  ? 'bg-amber-500 text-slate-950 font-extrabold shadow-sm'
-                                  : 'bg-slate-900 text-slate-400 hover:text-white hover:bg-slate-800 border border-slate-700/60'
-                              }`}
-                            >
-                              {preset.label}
-                            </button>
-                          );
-                        })}
+                    {isIntradayDaily ? (
+                      <div className="flex items-center space-x-2">
+                        <span className="text-xs text-emerald-400 font-semibold px-2 py-0.5 bg-emerald-500/10 rounded border border-emerald-500/20">
+                          1일 누적 (당일 장중 추이)
+                        </span>
                       </div>
+                    ) : (
+                      <>
+                        <span className="font-medium">기간:</span>
+                        <input
+                          type="date"
+                          disabled={isFixedWeekly}
+                          value={toInputDate(startDate)}
+                          onChange={(e) => setStartDate(toApiDate(e.target.value))}
+                          className={`bg-slate-900 text-slate-100 text-xs px-2.5 py-1 rounded-lg border border-slate-700 font-mono focus:outline-none focus:border-amber-400 ${
+                            isFixedWeekly ? 'opacity-50 cursor-not-allowed bg-slate-950/50' : 'cursor-pointer'
+                          }`}
+                        />
+                        <span className="text-slate-600">~</span>
+                        <input
+                          type="date"
+                          disabled={isFixedWeekly}
+                          value={toInputDate(endDate)}
+                          onChange={(e) => setEndDate(toApiDate(e.target.value))}
+                          className={`bg-slate-900 text-slate-100 text-xs px-2.5 py-1 rounded-lg border border-slate-700 font-mono focus:outline-none focus:border-amber-400 ${
+                            isFixedWeekly ? 'opacity-50 cursor-not-allowed bg-slate-950/50' : 'cursor-pointer'
+                          }`}
+                        />
+                        {isFixedWeekly ? (
+                          <span className="text-[10px] text-amber-400 font-semibold px-1.5 py-0.5 bg-amber-500/10 rounded border border-amber-500/20">
+                            2년 고정
+                          </span>
+                        ) : (
+                          /* 원터치 퀵 기간 선택 버튼 그룹 */
+                          <div className="flex items-center space-x-1 pl-2 border-l border-slate-800 ml-1">
+                            {(activeItemCode === 'INVESTOR_NET'
+                              ? [
+                                  { label: '1일', amount: 1, unit: 'day' },
+                                  { label: '3일', amount: 3, unit: 'day' },
+                                  { label: '7일', amount: 7, unit: 'day' },
+                                  { label: '1달', amount: 1, unit: 'month' },
+                                ]
+                              : [
+                                  { label: '1달', amount: 1, unit: 'month' },
+                                  { label: '3달', amount: 3, unit: 'month' },
+                                  { label: '6달', amount: 6, unit: 'month' },
+                                  { label: '1년', amount: 1, unit: 'year' },
+                                  { label: '2년', amount: 2, unit: 'year' },
+                                ]
+                            ).map((preset) => {
+                              const targetStart = dayjs().subtract(preset.amount, preset.unit as any).format('YYYYMMDD');
+                              const todayEnd = dayjs().format('YYYYMMDD');
+                              const isActive = startDate === targetStart && endDate === todayEnd;
+
+                              return (
+                                <button
+                                  key={preset.label}
+                                  onClick={() => handleQuickPeriodSelect(preset.amount, preset.unit as any)}
+                                  className={`px-2 py-0.5 rounded text-[11px] font-bold transition cursor-pointer ${
+                                    isActive
+                                      ? 'bg-amber-500 text-slate-950 font-extrabold shadow-sm'
+                                      : 'bg-slate-900 text-slate-400 hover:text-white hover:bg-slate-800 border border-slate-700/60'
+                                  }`}
+                                >
+                                  {preset.label}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </>
                     )}
                   </div>
 
@@ -2164,12 +2229,39 @@ export function App() {
                             <span>{getSyncBadgeText(activeCategory, activeItemCode)}</span>
                           </div>
                         </div>
+
+                        {/* 4주 이평선 ON/OFF 토글 체크박스 (기본값: 체크됨) */}
+                        <label className="flex items-center space-x-1.5 cursor-pointer bg-slate-950/90 px-2 sm:px-2.5 py-1 rounded-lg border border-slate-700/80 hover:border-purple-500/50 transition text-xs select-none shrink-0 shadow-sm">
+                          <input
+                            type="checkbox"
+                            checked={showForeignerMA4}
+                            onChange={(e) => setShowForeignerMA4(e.target.checked)}
+                            className="rounded text-purple-500 focus:ring-0 bg-slate-900 border-slate-700 cursor-pointer w-3.5 h-3.5"
+                          />
+                          <span className="font-bold text-slate-200 text-[10.5px] sm:text-xs flex items-center gap-1">
+                            <span className="w-2.5 h-1 bg-[#C084FC] rounded-full inline-block"></span>
+                            4주 이평선
+                          </span>
+                        </label>
                       </div>
 
                       {/* 상시 최신 외국인 2년 누적 데이터 요약 카드 (모바일 3열 콤팩트 배치) */}
+                      {/* 외국인 2년 누적 데이터 + 4주 이동평균선(MA4) 계산 */}
                       {cumInvestorData.length > 0 && (() => {
-                        const latest = cumInvestorData[cumInvestorData.length - 1];
-                        const prev = cumInvestorData.length > 1 ? cumInvestorData[cumInvestorData.length - 2] : null;
+                        const processedCumData = cumInvestorData.map((d, idx, arr) => {
+                          let ma4: number | null = null;
+                          if (idx >= 3) {
+                            const sum4 = arr.slice(idx - 3, idx + 1).reduce((acc, curr) => acc + (curr.foreigner_cum_net ?? 0), 0);
+                            ma4 = Math.round((sum4 / 4) * 100) / 100;
+                          }
+                          return {
+                            ...d,
+                            foreigner_ma4: ma4,
+                          };
+                        });
+
+                        const latest = processedCumData[processedCumData.length - 1];
+                        const prev = processedCumData.length > 1 ? processedCumData[processedCumData.length - 2] : null;
                         const prevVal = prev ? prev.foreigner_cum_net : latest.foreigner_cum_net;
                         const latestVal = latest.foreigner_cum_net;
                         const diff = latestVal - prevVal;
@@ -2177,71 +2269,76 @@ export function App() {
                         const isPos = diff >= 0;
 
                         return (
-                          <div className="grid grid-cols-3 gap-1.5 sm:gap-2.5 p-1.5 sm:p-2 sm:py-1.5 bg-slate-950/80 rounded-xl border border-slate-800 font-sans">
-                            {/* 전일 누적 */}
-                            <div className="bg-slate-900/90 py-1 px-2 sm:py-1.5 sm:px-2.5 rounded-lg border border-slate-800/80 flex flex-col justify-between min-w-0">
-                              <span className="text-[10px] sm:text-[11px] text-slate-400 font-semibold flex items-center justify-between">
-                                <span className="truncate">전일</span>
-                                <span className="font-mono text-[9px] sm:text-[10px] text-slate-500 hidden xs:inline">{prev ? prev.dt : '-'}</span>
-                              </span>
-                              <span className={`text-xs sm:text-sm font-bold font-outfit mt-0.5 truncate ${prevVal >= 0 ? 'text-amber-400' : 'text-blue-400'}`}>
-                                {formatTooltipCurrency(prevVal)}
-                              </span>
-                            </div>
-
-                            {/* 오늘 / 최근 누적 */}
-                            <div className="bg-slate-900/90 py-1 px-2 sm:py-1.5 sm:px-2.5 rounded-lg border border-slate-800/80 flex flex-col justify-between min-w-0">
-                              <span className="text-[10px] sm:text-[11px] text-slate-400 font-semibold flex items-center justify-between">
-                                <span className="truncate">최근</span>
-                                <span className="font-mono text-[9px] sm:text-[10px] text-amber-300 font-bold bg-amber-500/10 px-1 py-0.2 rounded border border-amber-500/20 truncate">{formatUpdateTime(latest).slice(-5)}</span>
-                              </span>
-                              <span className={`text-xs sm:text-sm font-extrabold font-outfit mt-0.5 truncate ${latestVal >= 0 ? 'text-amber-400' : 'text-blue-400'}`}>
-                                {formatTooltipCurrency(latestVal)}
-                              </span>
-                            </div>
-
-                            {/* 전일 대비 변동폭 */}
-                            <div className="bg-slate-900/90 py-1 px-2 sm:py-1.5 sm:px-2.5 rounded-lg border border-slate-800/80 flex flex-col justify-between min-w-0">
-                              <div className="flex items-center justify-between">
-                                <span className="text-[10px] sm:text-[11px] text-slate-400 font-semibold truncate">변동폭</span>
-                                <span className={`text-[9px] sm:text-xs px-1 py-0.2 sm:px-1.5 sm:py-0.5 rounded font-bold font-mono ${isPos ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20' : 'bg-blue-500/10 text-blue-400 border border-blue-500/20'}`}>
-                                  {diffPct >= 0 ? '+' : ''}{diffPct.toFixed(2)}%
+                          <>
+                            <div className="grid grid-cols-3 gap-1.5 sm:gap-2.5 p-1.5 sm:p-2 sm:py-1.5 bg-slate-950/80 rounded-xl border border-slate-800 font-sans">
+                              {/* 지난 주 누적 */}
+                              <div className="bg-slate-900/90 py-1 px-2 sm:py-1.5 sm:px-2.5 rounded-lg border border-slate-800/80 flex flex-col justify-between min-w-0">
+                                <span className="text-[10px] sm:text-[11px] text-slate-400 font-semibold flex items-center justify-between">
+                                  <span className="truncate">지난 주</span>
+                                  <span className="font-mono text-[9px] sm:text-[10px] text-slate-500 hidden xs:inline">{prev ? prev.dt : '-'}</span>
+                                </span>
+                                <span className={`text-xs sm:text-sm font-bold font-outfit mt-0.5 truncate ${prevVal >= 0 ? 'text-amber-400' : 'text-blue-400'}`}>
+                                  {formatTooltipCurrency(prevVal)}
                                 </span>
                               </div>
-                              <span className={`text-xs sm:text-sm font-extrabold font-mono mt-0.5 truncate ${isPos ? 'text-rose-400' : 'text-blue-400'}`}>
-                                {isPos ? '▲' : '▼'}{formatTooltipCurrency(diff)}
-                              </span>
+
+                              {/* 이번 주 누적 */}
+                              <div className="bg-slate-900/90 py-1 px-2 sm:py-1.5 sm:px-2.5 rounded-lg border border-slate-800/80 flex flex-col justify-between min-w-0">
+                                <span className="text-[10px] sm:text-[11px] text-slate-400 font-semibold flex items-center justify-between">
+                                  <span className="truncate">이번 주</span>
+                                  <span className="font-mono text-[9px] sm:text-[10px] text-amber-300 font-bold bg-amber-500/10 px-1 py-0.2 rounded border border-amber-500/20 truncate">{formatUpdateTime(latest).slice(-5)}</span>
+                                </span>
+                                <span className={`text-xs sm:text-sm font-extrabold font-outfit mt-0.5 truncate ${latestVal >= 0 ? 'text-amber-400' : 'text-blue-400'}`}>
+                                  {formatTooltipCurrency(latestVal)}
+                                </span>
+                              </div>
+
+                              {/* 전주 대비 변동폭 */}
+                              <div className="bg-slate-900/90 py-1 px-2 sm:py-1.5 sm:px-2.5 rounded-lg border border-slate-800/80 flex flex-col justify-between min-w-0">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-[10px] sm:text-[11px] text-slate-400 font-semibold truncate">전주 대비</span>
+                                  <span className={`text-[9px] sm:text-xs px-1 py-0.2 sm:px-1.5 sm:py-0.5 rounded font-bold font-mono ${isPos ? 'bg-rose-500/10 text-rose-400 border border-rose-500/20' : 'bg-blue-500/10 text-blue-400 border border-blue-500/20'}`}>
+                                    {diffPct >= 0 ? '+' : ''}{diffPct.toFixed(2)}%
+                                  </span>
+                                </div>
+                                <span className={`text-xs sm:text-sm font-extrabold font-mono mt-0.5 truncate ${isPos ? 'text-rose-400' : 'text-blue-400'}`}>
+                                  {isPos ? '▲' : '▼'}{formatTooltipCurrency(diff)}
+                                </span>
+                              </div>
                             </div>
-                          </div>
+
+                            <div className="h-[320px] sm:h-[540px] lg:h-[580px] xl:h-[620px]">
+                              <ResponsiveContainer width="100%" height="100%">
+                                <LineChart data={processedCumData}>
+                                  <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                                  <XAxis dataKey="dt" stroke="#CBD5E1" fontSize={13} tick={{ fill: '#CBD5E1', fontSize: 13 }} />
+                                  <YAxis stroke="#CBD5E1" fontSize={13} tick={{ fill: '#CBD5E1', fontSize: 13 }} tickFormatter={formatYAxisCurrency} />
+                                  <Tooltip
+                                    cursor={false}
+                                    contentStyle={{
+                                      backgroundColor: theme === 'light' ? '#FFFFFF' : '#1E293B',
+                                      borderColor: theme === 'light' ? '#CBD5E1' : '#475569',
+                                      color: theme === 'light' ? '#0F172A' : '#F8FAFC',
+                                      borderRadius: '12px',
+                                      boxShadow: '0 10px 25px -5px rgba(0,0,0,0.15)',
+                                    }}
+                                    itemStyle={{ color: theme === 'light' ? '#0F172A' : '#F8FAFC' }}
+                                    labelStyle={{ color: theme === 'light' ? '#0F172A' : '#F8FAFC', fontWeight: 'bold' }}
+                                    formatter={(val: any, name: any) => [formatTooltipCurrency(Number(val)), String(name).replace(/\s*누적/g, '')]}
+                                  />
+                                  <Legend />
+                                  {/* 0 기준선 (수급 0선 표출) */}
+                                  <ReferenceLine y={0} stroke="#64748B" strokeDasharray="3 3" strokeWidth={isMobileScreen ? 1 : 1.5} />
+                                  <Line type="monotone" dataKey="foreigner_cum_net" name="외국인 2년 누적" stroke="#F59E0B" strokeWidth={isMobileScreen ? 1.6 : 3} dot={false} />
+                                  {showForeignerMA4 && (
+                                    <Line type="monotone" dataKey="foreigner_ma4" name="4주 이평선" stroke="#C084FC" strokeWidth={isMobileScreen ? 1.5 : 2.2} dot={false} />
+                                  )}
+                                </LineChart>
+                              </ResponsiveContainer>
+                            </div>
+                          </>
                         );
                       })()}
-
-                      <div className="h-[320px] sm:h-[540px] lg:h-[580px] xl:h-[620px]">
-                        <ResponsiveContainer width="100%" height="100%">
-                          <LineChart data={cumInvestorData}>
-                            <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
-                            <XAxis dataKey="dt" stroke="#CBD5E1" fontSize={13} tick={{ fill: '#CBD5E1', fontSize: 13 }} />
-                            <YAxis stroke="#CBD5E1" fontSize={13} tick={{ fill: '#CBD5E1', fontSize: 13 }} tickFormatter={formatYAxisCurrency} />
-                            <Tooltip
-                              cursor={false}
-                              contentStyle={{
-                                backgroundColor: theme === 'light' ? '#FFFFFF' : '#1E293B',
-                                borderColor: theme === 'light' ? '#CBD5E1' : '#475569',
-                                color: theme === 'light' ? '#0F172A' : '#F8FAFC',
-                                borderRadius: '12px',
-                                boxShadow: '0 10px 25px -5px rgba(0,0,0,0.15)',
-                              }}
-                              itemStyle={{ color: theme === 'light' ? '#0F172A' : '#F8FAFC' }}
-                              labelStyle={{ color: theme === 'light' ? '#0F172A' : '#F8FAFC', fontWeight: 'bold' }}
-                              formatter={(val: any, name: any) => [formatTooltipCurrency(Number(val)), String(name).replace(/\s*누적/g, '')]}
-                            />
-                            <Legend />
-                            {/* 0 기준선 (수급 0선 표출) */}
-                            <ReferenceLine y={0} stroke="#64748B" strokeDasharray="3 3" strokeWidth={isMobileScreen ? 1 : 1.5} />
-                            <Line type="monotone" dataKey="foreigner_cum_net" name="외국인" stroke="#F59E0B" strokeWidth={isMobileScreen ? 1.6 : 3} dot={false} />
-                          </LineChart>
-                        </ResponsiveContainer>
-                      </div>
                     </div>
                   )}
 
@@ -2297,17 +2394,17 @@ export function App() {
 
                                   <div className="space-y-0.5 font-mono text-[9.5px] sm:text-xs">
                                     <div className="flex items-center justify-between text-slate-400">
-                                      <span>전일:</span>
+                                      <span>지난 주:</span>
                                       <span className="font-semibold text-slate-300">{formatTooltipCurrency(prevVal)}</span>
                                     </div>
                                     <div className="flex items-center justify-between">
-                                      <span>오늘:</span>
+                                      <span>이번 주:</span>
                                       <span className={`font-extrabold ${latestVal >= 0 ? s.textCol : 'text-blue-400'}`}>
                                         {formatTooltipCurrency(latestVal)}
                                       </span>
                                     </div>
                                     <div className="flex items-center justify-between pt-0.5 border-t border-slate-800/50">
-                                      <span className="text-slate-400 text-[9px] sm:text-[10px]">변동:</span>
+                                      <span className="text-slate-400 text-[9px] sm:text-[10px]">전주 대비:</span>
                                       <span className={`font-extrabold text-[9px] sm:text-[10px] ${isPos ? 'text-rose-400' : 'text-blue-400'}`}>
                                         {isPos ? '▲' : '▼'}{formatTooltipCurrency(diff)}
                                       </span>
@@ -2352,7 +2449,199 @@ export function App() {
                     </div>
                   )}
 
-                  {/* 3. 수급 분석: 3. 주체별 순매수 */}
+                  {/* 3. 수급 분석: 3. 주체별 순매수 (1일 누적 / tb_investor_daily_net) */}
+                  {activeCategory === 'INVESTOR' && activeItemCode === 'INVESTOR_DAILY_NET' && (
+                    <div className="bg-slate-900/90 rounded-2xl p-2.5 sm:p-4 lg:p-4 border border-slate-700/80 shadow-xl shadow-slate-950/60 space-y-2 sm:space-y-2.5">
+                      {/* 헤더: 타이틀, 갱신 뱃지, 시장 탭(KOSPI/KOSDAQ), 단일 날짜 선택기 */}
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center space-x-2 min-w-0">
+                          <h3 className="text-xs sm:text-base font-bold text-white flex items-center gap-1.5 truncate">
+                            <Activity className="w-4 h-4 sm:w-5 sm:h-5 text-emerald-400 shrink-0" />
+                            <span className="truncate">주체별 순매수 (1일 누적)</span>
+                          </h3>
+                          <div className="hidden xs:inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] sm:text-xs font-semibold bg-emerald-500/10 text-emerald-300 border border-emerald-500/20 shadow-sm shrink-0">
+                            <span className="relative flex h-1.5 w-1.5">
+                              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                              <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500"></span>
+                            </span>
+                            <span>{getSyncBadgeText(activeCategory, activeItemCode)}</span>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center space-x-1.5 sm:space-x-2">
+                          {/* 코스피 / 코스닥 스위처 */}
+                          <div className="flex bg-slate-950 p-0.5 rounded-lg border border-slate-700/80">
+                            <button
+                              onClick={() => setIntradayMarket('KOSPI')}
+                              className={`px-2 sm:px-2.5 py-1 rounded-md text-[11px] sm:text-xs font-bold transition cursor-pointer ${
+                                intradayMarket === 'KOSPI'
+                                  ? 'bg-amber-500 text-slate-950 shadow'
+                                  : 'text-slate-400 hover:text-white'
+                              }`}
+                            >
+                              KOSPI
+                            </button>
+                            <button
+                              onClick={() => setIntradayMarket('KOSDAQ')}
+                              className={`px-2 sm:px-2.5 py-1 rounded-md text-[11px] sm:text-xs font-bold transition cursor-pointer ${
+                                intradayMarket === 'KOSDAQ'
+                                  ? 'bg-amber-500 text-slate-950 shadow'
+                                  : 'text-slate-400 hover:text-white'
+                              }`}
+                            >
+                              KOSDAQ
+                            </button>
+                          </div>
+
+                          {/* 단일 날짜 선택 */}
+                          <div className="flex items-center space-x-1 bg-slate-950 px-2 py-1 rounded-lg border border-slate-700/80">
+                            <Calendar className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                            <input
+                              type="date"
+                              value={intradayDate}
+                              onChange={(e) => setIntradayDate(e.target.value)}
+                              className="bg-transparent text-slate-100 text-[11px] sm:text-xs font-mono focus:outline-none cursor-pointer"
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* 안내 알림 배너 (장전 또는 휴일로 직전 최근 거래일 데이터 대체 조회 시) */}
+                      {intradayNotice && (
+                        <div className="flex items-center justify-between gap-2 p-2.5 px-3.5 bg-amber-500/10 border border-amber-500/30 rounded-xl text-amber-300 text-xs font-semibold shadow-sm">
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm">🔔</span>
+                            <span>{intradayNotice}</span>
+                          </div>
+                          <button
+                            onClick={() => setIntradayNotice(null)}
+                            className="text-amber-400 hover:text-amber-200 text-xs font-bold px-1.5 py-0.5 rounded cursor-pointer"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      )}
+
+                      {/* 데이터 없음 안내 */}
+                      {intradayData.length === 0 && (
+                        <div className="flex flex-col items-center justify-center py-16 text-slate-400">
+                          <Activity className="w-8 h-8 text-slate-600 mb-2" />
+                          <p className="text-sm font-semibold text-slate-300">조회된 1일 누적 수급 데이터가 없습니다.</p>
+                          <p className="text-xs text-slate-500 mt-1">평일 (08:00~20:00) 진행 중 5분 간격으로 자동 집계됩니다.</p>
+                        </div>
+                      )}
+
+                      {/* 상시 최신 4대 주체 1일 누적 요약 카드 리스트 (2번 페이지와 동일한 2x2 / 4열 그리드) */}
+                      {intradayData.length > 0 && (() => {
+                        const latest = intradayData[intradayData.length - 1];
+                        const prev = intradayData.length > 1 ? intradayData[intradayData.length - 2] : null;
+
+                        const subjects = [
+                          { name: '외국인', key: 'foreigner_net', color: '#F59E0B', textCol: 'text-amber-400' },
+                          { name: '개인', key: 'individual_net', color: '#10B981', textCol: 'text-emerald-400' },
+                          { name: '기관', key: 'institution_net', color: '#8B5CF6', textCol: 'text-purple-400' },
+                          { name: '연기금', key: 'pension_fund_net', color: '#EC4899', textCol: 'text-rose-400' },
+                        ];
+
+                        return (
+                          <div className="grid grid-cols-2 lg:grid-cols-4 gap-1.5 sm:gap-2.5">
+                            {subjects.map((s) => {
+                              const prevVal = prev ? (prev as any)[s.key] ?? 0 : 0;
+                              const latestVal = (latest as any)[s.key] ?? 0;
+                              const diff = latestVal - prevVal;
+                              const isPos = diff >= 0;
+
+                              return (
+                                <div key={s.key} className="p-1.5 sm:py-1.5 sm:px-2.5 rounded-xl bg-slate-950/90 border border-slate-800 space-y-0.5 sm:space-y-1">
+                                  <div className="flex items-center justify-between border-b border-slate-800/80 pb-0.5 sm:pb-1">
+                                    <span className="text-[9.5px] sm:text-xs font-bold text-slate-200 flex items-center gap-1">
+                                      <span className="w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full inline-block" style={{ backgroundColor: s.color }}></span>
+                                      {s.name}
+                                    </span>
+                                    <span className="text-[8.5px] sm:text-[9px] text-amber-300 font-mono font-bold bg-amber-500/10 px-1 py-0.2 rounded border border-amber-500/20">
+                                      {formatUpdateTime({ sync_at: latest.sync_at }).slice(-5)}
+                                    </span>
+                                  </div>
+
+                                  <div className="space-y-0.5 font-mono text-[9.5px] sm:text-xs">
+                                    <div className="flex items-center justify-between text-slate-400">
+                                      <span>직전:</span>
+                                      <span className="font-semibold text-slate-300">{formatTooltipCurrency(prevVal)}</span>
+                                    </div>
+                                    <div className="flex items-center justify-between">
+                                      <span>누적:</span>
+                                      <span className={`font-extrabold ${latestVal >= 0 ? s.textCol : 'text-blue-400'}`}>
+                                        {formatTooltipCurrency(latestVal)}
+                                      </span>
+                                    </div>
+                                    <div className="flex items-center justify-between pt-0.5 border-t border-slate-800/50">
+                                      <span className="text-slate-400 text-[9px] sm:text-[10px]">직전 대비:</span>
+                                      <span className={`font-extrabold text-[9px] sm:text-[10px] ${isPos ? 'text-rose-400' : 'text-blue-400'}`}>
+                                        {isPos ? '▲' : '▼'}{formatTooltipCurrency(diff)}
+                                      </span>
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        );
+                      })()}
+
+                      {/* 1일 누적 시계열 라인 차트 */}
+                      <div className="h-[320px] sm:h-[540px] lg:h-[580px] xl:h-[620px]">
+                        <ResponsiveContainer width="100%" height="100%">
+                          <LineChart data={intradayData}>
+                            <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                            <XAxis
+                              dataKey="sync_at"
+                              ticks={thirtyMinTicks.length > 0 ? thirtyMinTicks : undefined}
+                              stroke="#CBD5E1"
+                              fontSize={isMobileScreen ? 10.5 : 12.5}
+                              tick={{ fill: '#CBD5E1', fontSize: isMobileScreen ? 10.5 : 12.5 }}
+                              minTickGap={isMobileScreen ? 18 : 28}
+                              interval={0}
+                              tickFormatter={(time: string) => {
+                                if (!time) return '';
+                                if (time.includes(' ')) return time.split(' ')[1].slice(0, 5);
+                                if (time.includes('T')) return time.split('T')[1].slice(0, 5);
+                                return time.slice(0, 5);
+                              }}
+                            />
+                            <YAxis stroke="#CBD5E1" fontSize={13} tick={{ fill: '#CBD5E1', fontSize: 13 }} tickFormatter={formatYAxisCurrency} />
+                            <Tooltip
+                              cursor={false}
+                              contentStyle={{
+                                backgroundColor: theme === 'light' ? '#FFFFFF' : '#1E293B',
+                                borderColor: theme === 'light' ? '#CBD5E1' : '#475569',
+                                color: theme === 'light' ? '#0F172A' : '#F8FAFC',
+                                borderRadius: '12px',
+                                boxShadow: '0 10px 25px -5px rgba(0,0,0,0.15)',
+                              }}
+                              itemStyle={{ color: theme === 'light' ? '#0F172A' : '#F8FAFC' }}
+                              labelStyle={{ color: theme === 'light' ? '#0F172A' : '#F8FAFC', fontWeight: 'bold' }}
+                              labelFormatter={(label: any) => {
+                                if (!label) return '';
+                                const str = String(label);
+                                if (str.includes(' ')) return `${str.split(' ')[0]} ${str.split(' ')[1].slice(0, 5)}`;
+                                return str.slice(0, 16);
+                              }}
+                              formatter={(val: any, name: any) => [formatTooltipCurrency(Number(val)), String(name)]}
+                            />
+                            <Legend />
+                            {/* 0 기준선 (수급 0선 표출) */}
+                            <ReferenceLine y={0} stroke="#64748B" strokeDasharray="3 3" strokeWidth={isMobileScreen ? 1 : 1.5} />
+                            <Line type="monotone" dataKey="foreigner_net" name="외국인" stroke="#F59E0B" strokeWidth={isMobileScreen ? 1.4 : 2.5} dot={false} />
+                            <Line type="monotone" dataKey="individual_net" name="개인" stroke="#10B981" strokeWidth={isMobileScreen ? 1.4 : 2.5} dot={false} />
+                            <Line type="monotone" dataKey="institution_net" name="기관" stroke="#8B5CF6" strokeWidth={isMobileScreen ? 1.4 : 2.5} dot={false} />
+                            <Line type="monotone" dataKey="pension_fund_net" name="연기금" stroke="#EC4899" strokeWidth={isMobileScreen ? 1.4 : 2.5} dot={false} />
+                          </LineChart>
+                        </ResponsiveContainer>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* 4. 수급 분석: 4. 주체별 순매수 (일별 시계열) */}
                   {activeCategory === 'INVESTOR' && activeItemCode === 'INVESTOR_NET' && (
                     <div className="bg-slate-900/90 rounded-2xl p-2.5 sm:p-4 lg:p-4 border border-slate-700/80 shadow-xl shadow-slate-950/60 space-y-2 sm:space-y-2.5">
                       <div className="flex items-center justify-between gap-2">

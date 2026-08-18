@@ -58,6 +58,7 @@ export function Sidebar({ activeCategory, activeItemCode, onSelectMenuItem, isMo
       items: [
         { id: 1, item_code: 'FOREIGNER_2Y_CUM', item_name: '외국인 2년 누적 (주봉)', target_symbol: 'FOREIGNER' },
         { id: 2, item_code: 'MAIN_3SUB_CUM', item_name: '외국인, 개인, 기관, 연기금 누적 (주봉)', target_symbol: 'FOREIGNER,INDIVIDUAL,INSTITUTION,PENSION' },
+        { id: 25, item_code: 'INVESTOR_DAILY_NET', item_name: '주체별 순매수 (1일)', target_symbol: 'ALL' },
         { id: 3, item_code: 'INVESTOR_NET', item_name: '주체별 순매수', target_symbol: 'ALL' },
       ],
     },

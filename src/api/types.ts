@@ -71,6 +71,8 @@ export interface InvestorDailyNetItem {
 export interface InvestorDailyNetResponse {
   market_type: string;
   dt: string;
+  is_fallback?: boolean;
+  message?: string;
   next_update_at?: string;
   last_sync_at?: string;
   items: InvestorDailyNetItem[];
