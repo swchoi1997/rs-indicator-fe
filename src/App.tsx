@@ -1490,22 +1490,37 @@ export function App() {
   const [intradayNotice, setIntradayNotice] = useState<string | null>(null);
   const isInternalDateSyncRef = useRef<boolean>(false);
 
-  // 1일 누적 장중 차트 X축 30분 단위 눈금(Tick) 필터링
-  const thirtyMinTicks = useMemo(() => {
+  // 안내 알림 배너 5초 후 자동 소멸 타이머
+  useEffect(() => {
+    if (!intradayNotice) return;
+    const timer = setTimeout(() => {
+      setIntradayNotice(null);
+    }, 5000);
+    return () => clearTimeout(timer);
+  }, [intradayNotice]);
+
+  // 1일 누적 장중 차트 X축 반응형 눈금 (PC: 1시간 단위 정각, 모바일: 2시간 단위 정각)
+  const responsiveIntradayTicks = useMemo(() => {
     return intradayData
       .filter((item) => {
         const raw = item.sync_at || '';
         const t = raw.includes(' ') ? raw.split(' ')[1] : raw.includes('T') ? raw.split('T')[1] : raw;
         if (t && t.length >= 5) {
+          const hh = parseInt(t.slice(0, 2), 10);
           const mm = t.slice(3, 5);
-          return mm === '00' || mm === '30';
+          if (isMobileScreen) {
+            // 모바일 화면: 2시간 단위 정각(08:00, 10:00, 12:00, 14:00, 16:00, 18:00, 20:00)만 표출
+            return mm === '00' && hh % 2 === 0;
+          }
+          // PC/태블릿 화면: 1시간 단위 정각(:00) 균등 표출 (08:00, 09:00, 10:00, 11:00, 12:00, 13:00, 14:00, 15:00, 16:00, 17:00, 18:00, 19:00, 20:00)
+          return mm === '00';
         }
         return false;
       })
       .map((item) => item.sync_at);
-  }, [intradayData]);
+  }, [intradayData, isMobileScreen]);
 
-  // 시계열 날짜/시간 포맷팅 헬퍼 (접속한 브라우저의 현지 시간대(한국 접속 시 KST)로 자동 변환)
+  // 시계열 날짜/시간 포맷팅 헬퍼 (한국 접속 시 KST 기준 유지)
   const formatUpdateTime = (item: any) => {
     if (!item) return '';
     const raw = item.sync_at || item.updated_at || item.date || item.dt || '';
@@ -1522,16 +1537,17 @@ export function App() {
       return str;
     }
 
-    // 3. 서버에서 전달된 UTC 일시 문자열을 브라우저의 현지 시간대(한국 접속 시 KST)로 자동 변환
+    // 3. "YYYY-MM-DD HH:mm:ss" 또는 "YYYY-MM-DD HH:mm" 형태 (이미 KST 로컬 시간대 포맷)
+    if (str.includes(' ') && str.includes('-') && str.includes(':')) {
+      const parts = str.split(' ');
+      const datePart = parts[0];
+      const timePart = parts[1].slice(0, 5);
+      return `${datePart} ${timePart}`;
+    }
+
+    // 4. ISO 일시 문자열 (예: "2026-08-18T10:30:00Z") 변환
     try {
-      let isoStr = str;
-      if (isoStr.includes(' ')) {
-        isoStr = isoStr.replace(' ', 'T');
-      }
-      if (!isoStr.endsWith('Z') && !isoStr.includes('+')) {
-        isoStr += 'Z';
-      }
-      const date = new Date(isoStr);
+      const date = new Date(str);
       if (!isNaN(date.getTime())) {
         const year = date.getFullYear();
         const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -1947,11 +1963,7 @@ export function App() {
                     <div className="px-2.5 py-1 rounded-xl bg-slate-950/80 border border-amber-500/30 text-amber-400 text-[11px] font-bold shadow-inner">
                       2년 고정
                     </div>
-                  ) : isIntradayDaily ? (
-                    <div className="px-2.5 py-1 rounded-xl bg-slate-950/80 border border-emerald-500/30 text-emerald-400 text-[11px] font-bold shadow-inner">
-                      1일 누적
-                    </div>
-                  ) : (
+                  ) : isIntradayDaily ? null : (
                     <button
                       onClick={() => setIsMobileDateModalOpen(true)}
                       className="flex items-center space-x-1 px-2.5 py-1.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700 text-xs font-bold transition active:scale-95 cursor-pointer shadow-sm"
@@ -2000,88 +2012,80 @@ export function App() {
                 {/* PC 데스크탑 전용 컨트롤 영역 (화면 >= xl): 기존 날짜 피커 + 프리셋 + 일봉/주봉 + 새로고침 1단 가로 정렬 */}
                 <div className="hidden xl:flex items-center space-x-4">
                   {/* 달력 조회 기간 피커 & 원터치 퀵 기간 선택 버튼 */}
-                  <div className="flex items-center space-x-2 text-xs text-slate-400 bg-slate-950/90 px-3 py-1.5 rounded-xl border border-slate-800">
-                    <Calendar className="w-4 h-4 text-amber-400 shrink-0" />
-                    {isIntradayDaily ? (
-                      <div className="flex items-center space-x-2">
-                        <span className="text-xs text-emerald-400 font-semibold px-2 py-0.5 bg-emerald-500/10 rounded border border-emerald-500/20">
-                          1일 누적 (당일 장중 추이)
+                  {!isIntradayDaily && (
+                    <div className="flex items-center space-x-2 text-xs text-slate-400 bg-slate-950/90 px-3 py-1.5 rounded-xl border border-slate-800">
+                      <Calendar className="w-4 h-4 text-amber-400 shrink-0" />
+                      <span className="font-medium">기간:</span>
+                      <input
+                        type="date"
+                        disabled={isFixedWeekly}
+                        value={toInputDate(startDate)}
+                        onChange={(e) => setStartDate(toApiDate(e.target.value))}
+                        className={`bg-slate-900 text-slate-100 text-xs px-2.5 py-1 rounded-lg border border-slate-700 font-mono focus:outline-none focus:border-amber-400 ${
+                          isFixedWeekly ? 'opacity-50 cursor-not-allowed bg-slate-950/50' : 'cursor-pointer'
+                        }`}
+                      />
+                      <span className="text-slate-600">~</span>
+                      <input
+                        type="date"
+                        disabled={isFixedWeekly}
+                        value={toInputDate(endDate)}
+                        onChange={(e) => setEndDate(toApiDate(e.target.value))}
+                        className={`bg-slate-900 text-slate-100 text-xs px-2.5 py-1 rounded-lg border border-slate-700 font-mono focus:outline-none focus:border-amber-400 ${
+                          isFixedWeekly ? 'opacity-50 cursor-not-allowed bg-slate-950/50' : 'cursor-pointer'
+                        }`}
+                      />
+                      {isFixedWeekly ? (
+                        <span className="text-[10px] text-amber-400 font-semibold px-1.5 py-0.5 bg-amber-500/10 rounded border border-amber-500/20">
+                          2년 고정
                         </span>
-                      </div>
-                    ) : (
-                      <>
-                        <span className="font-medium">기간:</span>
-                        <input
-                          type="date"
-                          disabled={isFixedWeekly}
-                          value={toInputDate(startDate)}
-                          onChange={(e) => setStartDate(toApiDate(e.target.value))}
-                          className={`bg-slate-900 text-slate-100 text-xs px-2.5 py-1 rounded-lg border border-slate-700 font-mono focus:outline-none focus:border-amber-400 ${
-                            isFixedWeekly ? 'opacity-50 cursor-not-allowed bg-slate-950/50' : 'cursor-pointer'
-                          }`}
-                        />
-                        <span className="text-slate-600">~</span>
-                        <input
-                          type="date"
-                          disabled={isFixedWeekly}
-                          value={toInputDate(endDate)}
-                          onChange={(e) => setEndDate(toApiDate(e.target.value))}
-                          className={`bg-slate-900 text-slate-100 text-xs px-2.5 py-1 rounded-lg border border-slate-700 font-mono focus:outline-none focus:border-amber-400 ${
-                            isFixedWeekly ? 'opacity-50 cursor-not-allowed bg-slate-950/50' : 'cursor-pointer'
-                          }`}
-                        />
-                        {isFixedWeekly ? (
-                          <span className="text-[10px] text-amber-400 font-semibold px-1.5 py-0.5 bg-amber-500/10 rounded border border-amber-500/20">
-                            2년 고정
-                          </span>
-                        ) : (
-                          /* 원터치 퀵 기간 선택 버튼 그룹 */
-                          <div className="flex items-center space-x-1 pl-2 border-l border-slate-800 ml-1">
-                            {(activeItemCode === 'INVESTOR_NET'
-                              ? [
-                                  { label: '1일', amount: 1, unit: 'day' },
-                                  { label: '3일', amount: 3, unit: 'day' },
-                                  { label: '7일', amount: 7, unit: 'day' },
-                                  { label: '1달', amount: 1, unit: 'month' },
-                                ]
-                              : [
-                                  { label: '1달', amount: 1, unit: 'month' },
-                                  { label: '3달', amount: 3, unit: 'month' },
-                                  { label: '6달', amount: 6, unit: 'month' },
-                                  { label: '1년', amount: 1, unit: 'year' },
-                                  { label: '2년', amount: 2, unit: 'year' },
-                                ]
-                            ).map((preset) => {
-                              const targetStart = dayjs().subtract(preset.amount, preset.unit as any).format('YYYYMMDD');
-                              const todayEnd = dayjs().format('YYYYMMDD');
-                              const isActive = startDate === targetStart && endDate === todayEnd;
+                      ) : (
+                        /* 원터치 퀵 기간 선택 버튼 그룹 */
+                        <div className="flex items-center space-x-1 pl-2 border-l border-slate-800 ml-1">
+                          {(activeItemCode === 'INVESTOR_NET'
+                            ? [
+                                { label: '1일', amount: 1, unit: 'day' },
+                                { label: '3일', amount: 3, unit: 'day' },
+                                { label: '7일', amount: 7, unit: 'day' },
+                                { label: '1달', amount: 1, unit: 'month' },
+                              ]
+                            : [
+                                { label: '1달', amount: 1, unit: 'month' },
+                                { label: '3달', amount: 3, unit: 'month' },
+                                { label: '6달', amount: 6, unit: 'month' },
+                                { label: '1년', amount: 1, unit: 'year' },
+                                { label: '2년', amount: 2, unit: 'year' },
+                              ]
+                          ).map((preset) => {
+                            const targetStart = dayjs().subtract(preset.amount, preset.unit as any).format('YYYYMMDD');
+                            const todayEnd = dayjs().format('YYYYMMDD');
+                            const isActive = startDate === targetStart && endDate === todayEnd;
 
-                              return (
-                                <button
-                                  key={preset.label}
-                                  onClick={() => handleQuickPeriodSelect(preset.amount, preset.unit as any)}
-                                  className={`px-2 py-0.5 rounded text-[11px] font-bold transition cursor-pointer ${
-                                    isActive
-                                      ? 'bg-amber-500 text-slate-950 font-extrabold shadow-sm'
-                                      : 'bg-slate-900 text-slate-400 hover:text-white hover:bg-slate-800 border border-slate-700/60'
-                                  }`}
-                                >
-                                  {preset.label}
-                                </button>
-                              );
-                            })}
-                          </div>
-                        )}
-                      </>
-                    )}
-                  </div>
+                            return (
+                              <button
+                                key={preset.label}
+                                onClick={() => handleQuickPeriodSelect(preset.amount, preset.unit as any)}
+                                className={`px-2 py-0.5 rounded text-[11px] font-bold transition cursor-pointer ${
+                                  isActive
+                                    ? 'bg-amber-500 text-slate-950 font-extrabold shadow-sm'
+                                    : 'bg-slate-900 text-slate-400 hover:text-white hover:bg-slate-800 border border-slate-700/60'
+                                }`}
+                              >
+                                {preset.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   {/* 모던 슬라이딩 일/주봉 스위치 */}
                   {isFixedWeekly ? (
                     <div className="px-4 py-2 rounded-full bg-slate-950/90 border border-amber-500/40 text-amber-400 text-xs font-bold shadow-inner flex items-center gap-1.5">
                       <span>주봉 고정</span>
                     </div>
-                  ) : (
+                  ) : isIntradayDaily ? null : (
                     <div
                       onClick={() => setPeriodType((prev) => (prev === 'D' ? 'W' : 'D'))}
                       className="w-28 h-9 rounded-full bg-slate-950 border border-slate-700/80 p-1 flex items-center justify-between relative cursor-pointer select-none shadow-inner"
@@ -2595,11 +2599,10 @@ export function App() {
                             <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
                             <XAxis
                               dataKey="sync_at"
-                              ticks={thirtyMinTicks.length > 0 ? thirtyMinTicks : undefined}
+                              ticks={responsiveIntradayTicks.length > 0 ? responsiveIntradayTicks : undefined}
                               stroke="#CBD5E1"
-                              fontSize={isMobileScreen ? 10.5 : 12.5}
-                              tick={{ fill: '#CBD5E1', fontSize: isMobileScreen ? 10.5 : 12.5 }}
-                              minTickGap={isMobileScreen ? 18 : 28}
+                              fontSize={isMobileScreen ? 10 : 12}
+                              tick={{ fill: '#CBD5E1', fontSize: isMobileScreen ? 10 : 12 }}
                               interval={0}
                               tickFormatter={(time: string) => {
                                 if (!time) return '';
