@@ -695,13 +695,19 @@ function MacroCandleChart({
       const roundedBond = Math.round(v * 1000) / 1000;
       return `${roundedBond.toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 })} %`;
     }
+    // 달러/엔 환율 소수점 셋째 자리까지 표출
+    if (symbol === 'USDJPY') {
+      const roundedJpy = Math.round(v * 1000) / 1000;
+      return `${roundedJpy.toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 })} 엔`;
+    }
     // 그 외 지표는 소수점 3번째 자리에서 반올림하여 최대 2자리까지 표출
     const rounded = Math.round(v * 100) / 100;
     if (symbol === 'USDKRW' || /^\d{6}$/.test(symbol)) {
       return `${rounded.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })} 원`;
     }
     if (symbol === 'WTI') {
-      return `$ ${rounded.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+      const roundedWti = Math.round(v * 1000) / 1000;
+      return `$ ${roundedWti.toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 })}`;
     }
     if (symbol === 'NASDAQ' || symbol === 'S&P500' || symbol === '^IXIC' || symbol === '^GSPC') {
       return `$ ${rounded.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -1369,6 +1375,7 @@ const ORDERED_MENU_ITEMS: FlatMenuItem[] = [
   { categoryCode: 'MACRO', itemCode: 'US10Y', symbol: 'US10Y', title: '거시 경제 > 미국채 10년물 금리' },
   { categoryCode: 'MACRO', itemCode: 'KR_BOND_3Y', symbol: 'KR_BOND_3Y', title: '거시 경제 > 한국 국고채 3년물 금리' },
   { categoryCode: 'MACRO', itemCode: 'WTI', symbol: 'WTI', title: '거시 경제 > WTI 유가 선물' },
+  { categoryCode: 'MACRO', itemCode: 'USDJPY', symbol: 'USDJPY', title: '거시 경제 > 달러/엔 환율' },
 
   // 시장 지수
   { categoryCode: 'MARKET', itemCode: 'KOSPI', symbol: 'KOSPI', title: '시장 지수 > 코스피' },
@@ -1397,6 +1404,16 @@ export function App() {
   const [theme, setTheme] = useState<'dark' | 'light'>(() => {
     return (localStorage.getItem('theme') as 'dark' | 'light') || 'dark';
   });
+
+  const [isMobileScreen, setIsMobileScreen] = useState<boolean>(() => typeof window !== 'undefined' && window.innerWidth < 768);
+
+  useEffect(() => {
+    const handleResize = () => {
+      setIsMobileScreen(window.innerWidth < 768);
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   const toggleTheme = () => {
     setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
@@ -1462,15 +1479,45 @@ export function App() {
   const [tablePage, setTablePage] = useState<number>(1);
   const [cumInvestorData, setCumInvestorData] = useState<InvestorNetCumulativeItem[]>([]);
 
-  // 시계열 날짜/시간 포맷팅 헬퍼 (YYYYMMDD -> YYYY-MM-DD 또는 갱신 시각 표출)
+  // 시계열 날짜/시간 포맷팅 헬퍼 (접속한 브라우저의 현지 시간대(한국 접속 시 KST)로 자동 변환)
   const formatUpdateTime = (item: any) => {
     if (!item) return '';
     const raw = item.sync_at || item.updated_at || item.date || item.dt || '';
     if (!raw) return '';
     const str = String(raw).trim();
+
+    // 1. 순수 8자리 날짜 (YYYYMMDD)
     if (str.length === 8 && !str.includes('-') && !str.includes(':')) {
       return `${str.slice(0, 4)}-${str.slice(4, 6)}-${str.slice(6, 8)}`;
     }
+
+    // 2. 순수 10자리 날짜 (YYYY-MM-DD)
+    if (str.length === 10 && str.includes('-') && !str.includes(':')) {
+      return str;
+    }
+
+    // 3. 서버에서 전달된 UTC 일시 문자열을 브라우저의 현지 시간대(한국 접속 시 KST)로 자동 변환
+    try {
+      let isoStr = str;
+      if (isoStr.includes(' ')) {
+        isoStr = isoStr.replace(' ', 'T');
+      }
+      if (!isoStr.endsWith('Z') && !isoStr.includes('+')) {
+        isoStr += 'Z';
+      }
+      const date = new Date(isoStr);
+      if (!isNaN(date.getTime())) {
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        const hours = String(date.getHours()).padStart(2, '0');
+        const minutes = String(date.getMinutes()).padStart(2, '0');
+        return `${year}-${month}-${day} ${hours}:${minutes}`;
+      }
+    } catch {
+      // fallback
+    }
+
     if (str.includes('T')) {
       const parts = str.split('T');
       return `${parts[0]} ${parts[1].slice(0, 5)}`;
@@ -1496,7 +1543,7 @@ export function App() {
       return '평일 15분 간격 (08:00~20:00)';
     }
     if (category === 'MACRO') {
-      if (itemCode === 'USDKRW') return '평일 15분 간격';
+      if (itemCode === 'USDKRW' || itemCode === 'USDJPY') return '평일 15분 간격';
       if (itemCode === 'WTI') return '평일 30분 간격';
       if (itemCode === 'KR_BOND_3Y' || itemCode === 'KR3Y') return '평일 30분 간격 (09:00~16:00)';
       if (itemCode === 'US10Y') return '평일 10분 간격 수집';
@@ -1522,11 +1569,15 @@ export function App() {
     if (val === undefined || val === null || isNaN(val)) return '0';
     if (symbol === 'USDKRW') {
       return `${Number(val).toLocaleString()} 원`;
+    } else if (symbol === 'USDJPY') {
+      const rounded = Math.round(val * 1000) / 1000;
+      return `${rounded.toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 })} 엔`;
     } else if (symbol === 'US10Y' || symbol === 'KR_BOND_3Y' || symbol === 'KR3Y') {
       const rounded = Math.round(val * 1000) / 1000;
       return `${rounded.toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 })} %`;
     } else if (symbol === 'WTI') {
-      return `$ ${Number(val)} / bbl`;
+      const rounded = Math.round(val * 1000) / 1000;
+      return `$ ${rounded.toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 })} / bbl`;
     }
     return `${Number(val).toLocaleString()}`;
   };
@@ -2186,8 +2237,8 @@ export function App() {
                             />
                             <Legend />
                             {/* 0 기준선 (수급 0선 표출) */}
-                            <ReferenceLine y={0} stroke="#64748B" strokeDasharray="3 3" strokeWidth={1.5} />
-                            <Line type="monotone" dataKey="foreigner_cum_net" name="외국인" stroke="#F59E0B" strokeWidth={3} dot={false} />
+                            <ReferenceLine y={0} stroke="#64748B" strokeDasharray="3 3" strokeWidth={isMobileScreen ? 1 : 1.5} />
+                            <Line type="monotone" dataKey="foreigner_cum_net" name="외국인" stroke="#F59E0B" strokeWidth={isMobileScreen ? 1.6 : 3} dot={false} />
                           </LineChart>
                         </ResponsiveContainer>
                       </div>
@@ -2290,11 +2341,11 @@ export function App() {
                             />
                             <Legend />
                             {/* 0 기준선 (수급 0선 표출) */}
-                            <ReferenceLine y={0} stroke="#64748B" strokeDasharray="3 3" strokeWidth={1.5} />
-                            <Line type="monotone" dataKey="foreigner_cum_net" name="외국인" stroke="#F59E0B" strokeWidth={2.5} dot={false} />
-                            <Line type="monotone" dataKey="individual_cum_net" name="개인" stroke="#10B981" strokeWidth={2.5} dot={false} />
-                            <Line type="monotone" dataKey="institution_cum_net" name="기관" stroke="#8B5CF6" strokeWidth={2.5} dot={false} />
-                            <Line type="monotone" dataKey="pension_fund_cum_net" name="연기금" stroke="#EC4899" strokeWidth={2.5} dot={false} />
+                            <ReferenceLine y={0} stroke="#64748B" strokeDasharray="3 3" strokeWidth={isMobileScreen ? 1 : 1.5} />
+                            <Line type="monotone" dataKey="foreigner_cum_net" name="외국인" stroke="#F59E0B" strokeWidth={isMobileScreen ? 1.4 : 2.5} dot={false} />
+                            <Line type="monotone" dataKey="individual_cum_net" name="개인" stroke="#10B981" strokeWidth={isMobileScreen ? 1.4 : 2.5} dot={false} />
+                            <Line type="monotone" dataKey="institution_cum_net" name="기관" stroke="#8B5CF6" strokeWidth={isMobileScreen ? 1.4 : 2.5} dot={false} />
+                            <Line type="monotone" dataKey="pension_fund_cum_net" name="연기금" stroke="#EC4899" strokeWidth={isMobileScreen ? 1.4 : 2.5} dot={false} />
                           </LineChart>
                         </ResponsiveContainer>
                       </div>
@@ -2834,21 +2885,35 @@ export function App() {
 
                         const formatVal = (v: number) => {
                           if (activeItemCode === 'USDKRW') return `${Number(v).toLocaleString()} 원`;
+                          if (activeItemCode === 'USDJPY') {
+                            const rounded = Math.round(v * 1000) / 1000;
+                            return `${rounded.toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 })} 엔`;
+                          }
                           if (activeItemCode === 'US10Y' || activeItemCode === 'KR_BOND_3Y' || activeItemCode === 'KR3Y') {
                             const rounded = Math.round(v * 1000) / 1000;
                             return `${rounded.toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 })} %`;
                           }
-                          if (activeItemCode === 'WTI') return `$ ${Number(v)} / bbl`;
+                          if (activeItemCode === 'WTI') {
+                            const rounded = Math.round(v * 1000) / 1000;
+                            return `$ ${rounded.toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 })} / bbl`;
+                          }
                           return `${Number(v).toLocaleString()}`;
                         };
 
                         const formatDiff = (v: number) => {
                           if (activeItemCode === 'USDKRW') return `${v >= 0 ? '+' : ''}${v.toFixed(2)} 원`;
+                          if (activeItemCode === 'USDJPY') {
+                            const rounded = Math.round(v * 1000) / 1000;
+                            return `${v >= 0 ? '+' : ''}${rounded.toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 })} 엔`;
+                          }
                           if (activeItemCode === 'US10Y' || activeItemCode === 'KR_BOND_3Y' || activeItemCode === 'KR3Y') {
                             const rounded = Math.round(v * 1000) / 1000;
                             return `${v >= 0 ? '+' : ''}${rounded.toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 })} %p`;
                           }
-                          if (activeItemCode === 'WTI') return `${v >= 0 ? '+' : ''}$${Number(v.toFixed(4))}`;
+                          if (activeItemCode === 'WTI') {
+                            const rounded = Math.round(v * 1000) / 1000;
+                            return `${v >= 0 ? '+' : ''}$${rounded.toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 })}`;
+                          }
                           return `${v >= 0 ? '+' : ''}${v.toFixed(2)}`;
                         };
 
@@ -2907,7 +2972,7 @@ export function App() {
                                 fontSize={13}
                                 tick={{ fill: '#CBD5E1', fontSize: 13 }}
                                 domain={['auto', 'auto']}
-                                tickFormatter={(v) => (activeItemCode === 'US10Y' || activeItemCode === 'KR_BOND_3Y' || activeItemCode === 'KR3Y' ? `${Number(v).toFixed(3)}%` : String(v))}
+                                tickFormatter={(v) => (activeItemCode === 'US10Y' || activeItemCode === 'KR_BOND_3Y' || activeItemCode === 'KR3Y' ? `${Number(v).toFixed(3)}%` : activeItemCode === 'USDJPY' ? `${Number(v).toFixed(3)}엔` : activeItemCode === 'WTI' ? `$${Number(v).toFixed(3)}` : String(v))}
                               />
                               <Tooltip
                                 cursor={false}
