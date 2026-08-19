@@ -1499,7 +1499,7 @@ export function App() {
     return () => clearTimeout(timer);
   }, [intradayNotice]);
 
-  // 1일 누적 장중 차트 X축 반응형 눈금 (PC: 1시간 단위 정각, 모바일: 2시간 단위 정각)
+  // 1일 누적 장중 차트 X축 반응형 눈금 (PC: 1시간 단위 정각, 모바일: 2시간 단위 정각 - 08:00~20:00 엄격 제한)
   const responsiveIntradayTicks = useMemo(() => {
     return intradayData
       .filter((item) => {
@@ -1508,6 +1508,8 @@ export function App() {
         if (t && t.length >= 5) {
           const hh = parseInt(t.slice(0, 2), 10);
           const mm = t.slice(3, 5);
+          // 08:00 이전 또는 20:00 이후 눈금은 차단
+          if (hh < 8 || hh > 20) return false;
           if (isMobileScreen) {
             // 모바일 화면: 2시간 단위 정각(08:00, 10:00, 12:00, 14:00, 16:00, 18:00, 20:00)만 표출
             return mm === '00' && hh % 2 === 0;
@@ -1520,34 +1522,33 @@ export function App() {
       .map((item) => item.sync_at);
   }, [intradayData, isMobileScreen]);
 
-  // 시계열 날짜/시간 포맷팅 헬퍼 (한국 접속 시 KST 기준 유지)
+  // 시계열 날짜/시간 포맷팅 헬퍼 (백엔드 UTC 일시 문자열을 브라우저 현지 시간대(한국 접속 시 KST +9시간)로 자동 변환)
   const formatUpdateTime = (item: any) => {
     if (!item) return '';
     const raw = item.sync_at || item.updated_at || item.date || item.dt || '';
     if (!raw) return '';
     const str = String(raw).trim();
 
-    // 1. 순수 8자리 날짜 (YYYYMMDD)
+    // 1. 순수 8자리 날짜 (YYYYMMDD) - 거래일자는 변환 없이 그대로 반환
     if (str.length === 8 && !str.includes('-') && !str.includes(':')) {
       return `${str.slice(0, 4)}-${str.slice(4, 6)}-${str.slice(6, 8)}`;
     }
 
-    // 2. 순수 10자리 날짜 (YYYY-MM-DD)
+    // 2. 순수 10자리 날짜 (YYYY-MM-DD) - 거래일자는 변환 없이 그대로 반환
     if (str.length === 10 && str.includes('-') && !str.includes(':')) {
       return str;
     }
 
-    // 3. "YYYY-MM-DD HH:mm:ss" 또는 "YYYY-MM-DD HH:mm" 형태 (이미 KST 로컬 시간대 포맷)
-    if (str.includes(' ') && str.includes('-') && str.includes(':')) {
-      const parts = str.split(' ');
-      const datePart = parts[0];
-      const timePart = parts[1].slice(0, 5);
-      return `${datePart} ${timePart}`;
-    }
-
-    // 4. ISO 일시 문자열 (예: "2026-08-18T10:30:00Z") 변환
+    // 3. 서버에서 전달된 UTC 일시 문자열을 브라우저의 현지 시간대(한국 접속 시 KST +9시간)로 자동 변환
     try {
-      const date = new Date(str);
+      let isoStr = str;
+      if (isoStr.includes(' ') && !isoStr.includes('T')) {
+        isoStr = isoStr.replace(' ', 'T');
+      }
+      if (!isoStr.endsWith('Z') && !isoStr.includes('+')) {
+        isoStr += 'Z';
+      }
+      const date = new Date(isoStr);
       if (!isNaN(date.getTime())) {
         const year = date.getFullYear();
         const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -1705,7 +1706,34 @@ export function App() {
         if (activeItemCode === 'INVESTOR_DAILY_NET') {
           const apiDt = intradayDate ? intradayDate.replace(/-/g, '') : undefined;
           const res = await getInvestorDailyNet(intradayMarket, apiDt);
-          setIntradayData(res.items || []);
+
+          let filteredItems = res.items || [];
+
+          // 1) 08:00 ~ 20:00 사이의 시간 데이터만 필터링
+          filteredItems = filteredItems.filter((item) => {
+            const raw = item.sync_at || '';
+            const t = raw.includes(' ') ? raw.split(' ')[1] : raw.includes('T') ? raw.split('T')[1] : raw;
+            if (t && t.length >= 5) {
+              const hh = parseInt(t.slice(0, 2), 10);
+              const mm = parseInt(t.slice(3, 5), 10);
+              const totalMin = hh * 60 + mm;
+              return totalMin >= 8 * 60 && totalMin <= 20 * 60;
+            }
+            return true;
+          });
+
+          // 2) 오늘 당일 데이터 조회 시: 실제로 수집된 최신 시각(last_sync_at)까지만 잘라서 표출
+          const todayStr = dayjs().format('YYYYMMDD');
+          const isToday = res.dt === todayStr || (!res.dt && (!intradayDate || intradayDate.replace(/-/g, '') === todayStr));
+          if (isToday && res.last_sync_at) {
+            const lastSync = res.last_sync_at.trim();
+            filteredItems = filteredItems.filter((item) => {
+              const raw = (item.sync_at || '').trim();
+              return raw <= lastSync;
+            });
+          }
+
+          setIntradayData(filteredItems);
           if (res.dt) {
             const formatted = `${res.dt.slice(0, 4)}-${res.dt.slice(4, 6)}-${res.dt.slice(6, 8)}`;
             if (formatted !== intradayDate) {
@@ -2275,22 +2303,22 @@ export function App() {
                         return (
                           <>
                             <div className="grid grid-cols-3 gap-1.5 sm:gap-2.5 p-1.5 sm:p-2 sm:py-1.5 bg-slate-950/80 rounded-xl border border-slate-800 font-sans">
-                              {/* 지난 주 누적 */}
+                              {/* 직전 주 */}
                               <div className="bg-slate-900/90 py-1 px-2 sm:py-1.5 sm:px-2.5 rounded-lg border border-slate-800/80 flex flex-col justify-between min-w-0">
                                 <span className="text-[10px] sm:text-[11px] text-slate-400 font-semibold flex items-center justify-between">
-                                  <span className="truncate">지난 주</span>
-                                  <span className="font-mono text-[9px] sm:text-[10px] text-slate-500 hidden xs:inline">{prev ? prev.dt : '-'}</span>
+                                  <span className="truncate">직전 주</span>
+                                  <span className="font-mono text-[9px] sm:text-[10px] text-slate-400 font-bold hidden xs:inline">{prev ? prev.dt : '-'}</span>
                                 </span>
                                 <span className={`text-xs sm:text-sm font-bold font-outfit mt-0.5 truncate ${prevVal >= 0 ? 'text-amber-400' : 'text-blue-400'}`}>
                                   {formatTooltipCurrency(prevVal)}
                                 </span>
                               </div>
 
-                              {/* 이번 주 누적 */}
+                              {/* 최근 주 누적 */}
                               <div className="bg-slate-900/90 py-1 px-2 sm:py-1.5 sm:px-2.5 rounded-lg border border-slate-800/80 flex flex-col justify-between min-w-0">
-                                <span className="text-[10px] sm:text-[11px] text-slate-400 font-semibold flex items-center justify-between">
-                                  <span className="truncate">이번 주</span>
-                                  <span className="font-mono text-[9px] sm:text-[10px] text-amber-300 font-bold bg-amber-500/10 px-1 py-0.2 rounded border border-amber-500/20 truncate">{formatUpdateTime(latest).slice(-5)}</span>
+                                <span className="text-[10px] sm:text-[11px] text-slate-400 font-semibold flex items-center justify-between gap-1">
+                                  <span className="truncate">최근 주</span>
+                                  <span className="font-mono text-[8.5px] sm:text-[9.5px] text-amber-300 font-bold bg-amber-500/10 px-1 py-0.2 rounded border border-amber-500/20 truncate">{formatUpdateTime(latest)}</span>
                                 </span>
                                 <span className={`text-xs sm:text-sm font-extrabold font-outfit mt-0.5 truncate ${latestVal >= 0 ? 'text-amber-400' : 'text-blue-400'}`}>
                                   {formatTooltipCurrency(latestVal)}
@@ -2562,8 +2590,8 @@ export function App() {
                                       <span className="w-1.5 h-1.5 sm:w-2 sm:h-2 rounded-full inline-block" style={{ backgroundColor: s.color }}></span>
                                       {s.name}
                                     </span>
-                                    <span className="text-[8.5px] sm:text-[9px] text-amber-300 font-mono font-bold bg-amber-500/10 px-1 py-0.2 rounded border border-amber-500/20">
-                                      {formatUpdateTime({ sync_at: latest.sync_at }).slice(-5)}
+                                    <span className="text-[8px] sm:text-[9px] text-amber-300 font-mono font-bold bg-amber-500/10 px-1 py-0.2 rounded border border-amber-500/20">
+                                      {formatUpdateTime({ sync_at: latest.sync_at })}
                                     </span>
                                   </div>
 
@@ -3032,23 +3060,23 @@ export function App() {
 
                         return (
                           <div className="grid grid-cols-3 gap-1.5 sm:gap-2.5 p-1.5 sm:p-2 sm:py-1.5 bg-slate-950/80 rounded-xl border border-slate-800 font-sans">
-                            {/* 전일 지수 */}
+                            {/* 직전 거래일 지수 */}
                             <div className="bg-slate-900/90 py-1 px-2 sm:py-1.5 sm:px-2.5 rounded-lg border border-slate-800/80 flex flex-col justify-between min-w-0">
                               <span className="text-[10px] sm:text-[11px] text-slate-400 font-semibold flex items-center justify-between">
-                                <span className="truncate">전일</span>
-                                <span className="font-mono text-[9px] sm:text-[10px] text-slate-500 hidden xs:inline">{prev ? prev.date : '-'}</span>
+                                <span className="truncate">직전 거래일</span>
+                                <span className="font-mono text-[9px] sm:text-[10px] text-slate-400 font-bold">{prev ? prev.date : '-'}</span>
                               </span>
                               <span className="text-xs sm:text-sm font-bold text-slate-200 font-mono mt-0.5 truncate">
                                 {formatVal(prevVal)}
                               </span>
                             </div>
 
-                            {/* 오늘 지수 */}
+                            {/* 최근 거래일 지수 */}
                             <div className="bg-slate-900/90 py-1 px-2 sm:py-1.5 sm:px-2.5 rounded-lg border border-slate-800/80 flex flex-col justify-between min-w-0">
-                              <span className="text-[10px] sm:text-[11px] text-slate-400 font-semibold flex items-center justify-between">
-                                <span className="truncate">오늘</span>
-                                <span className="font-mono text-[9px] sm:text-[10px] text-amber-300 font-bold bg-amber-500/10 px-1 py-0.2 rounded border border-amber-500/20 truncate">
-                                  {formatUpdateTime(latest).slice(-5)}
+                              <span className="text-[10px] sm:text-[11px] text-slate-400 font-semibold flex items-center justify-between gap-1">
+                                <span className="truncate">최근 거래일</span>
+                                <span className="font-mono text-[8.5px] sm:text-[9.5px] text-amber-300 font-bold bg-amber-500/10 px-1 py-0.2 rounded border border-amber-500/20 truncate">
+                                  {formatUpdateTime(latest)}
                                 </span>
                               </span>
                               <span className="text-xs sm:text-sm font-extrabold text-amber-400 font-mono mt-0.5 truncate">
@@ -3211,23 +3239,23 @@ export function App() {
 
                         return (
                           <div className="grid grid-cols-3 gap-1.5 sm:gap-2.5 p-1.5 sm:p-2 sm:py-1.5 bg-slate-950/80 rounded-xl border border-slate-800 font-sans">
-                            {/* 전일 지표값 */}
+                            {/* 직전 거래일 지표값 */}
                             <div className="bg-slate-900/90 py-1 px-2 sm:py-1.5 sm:px-2.5 rounded-lg border border-slate-800/80 flex flex-col justify-between min-w-0">
                               <span className="text-[10px] sm:text-[11px] text-slate-400 font-semibold flex items-center justify-between">
-                                <span className="truncate">전일</span>
-                                <span className="font-mono text-[9px] sm:text-[10px] text-slate-500 hidden xs:inline">{prev ? prev.date : '-'}</span>
+                                <span className="truncate">직전 거래일</span>
+                                <span className="font-mono text-[9px] sm:text-[10px] text-slate-400 font-bold">{prev ? prev.date : '-'}</span>
                               </span>
                               <span className="text-xs sm:text-sm font-bold text-slate-200 font-mono mt-0.5 truncate">
                                 {formatVal(prevVal)}
                               </span>
                             </div>
 
-                            {/* 오늘 지표값 */}
+                            {/* 최근 거래일 지표값 */}
                             <div className="bg-slate-900/90 py-1 px-2 sm:py-1.5 sm:px-2.5 rounded-lg border border-slate-800/80 flex flex-col justify-between min-w-0">
-                              <span className="text-[10px] sm:text-[11px] text-slate-400 font-semibold flex items-center justify-between">
-                                <span className="truncate">오늘</span>
-                                <span className="font-mono text-[9px] sm:text-[10px] text-amber-300 font-bold bg-amber-500/10 px-1 py-0.2 rounded border border-amber-500/20 truncate">
-                                  {formatUpdateTime(latest).slice(-5)}
+                              <span className="text-[10px] sm:text-[11px] text-slate-400 font-semibold flex items-center justify-between gap-1">
+                                <span className="truncate">최근 거래일</span>
+                                <span className="font-mono text-[8.5px] sm:text-[9.5px] text-amber-300 font-bold bg-amber-500/10 px-1 py-0.2 rounded border border-amber-500/20 truncate">
+                                  {formatUpdateTime(latest)}
                                 </span>
                               </span>
                               <span className="text-xs sm:text-sm font-extrabold text-amber-400 font-mono mt-0.5 truncate">
@@ -3398,23 +3426,23 @@ export function App() {
 
                           return (
                             <div className="grid grid-cols-3 gap-1.5 sm:gap-2.5 p-1.5 sm:p-2 sm:py-1.5 bg-slate-950/80 rounded-xl border border-slate-800 font-sans">
-                              {/* 전일 주가 */}
+                              {/* 직전 거래일 주가 */}
                               <div className="bg-slate-900/90 py-1 px-2 sm:py-1.5 sm:px-2.5 rounded-lg border border-slate-800/80 flex flex-col justify-between min-w-0">
                                 <span className="text-[10px] sm:text-[11px] text-slate-400 font-semibold flex items-center justify-between">
-                                  <span className="truncate">전일</span>
-                                  <span className="font-mono text-[9px] sm:text-[10px] text-slate-500 hidden xs:inline">{prev ? prev.date : '-'}</span>
+                                  <span className="truncate">직전 거래일</span>
+                                  <span className="font-mono text-[9px] sm:text-[10px] text-slate-400 font-bold">{prev ? prev.date : '-'}</span>
                                 </span>
                                 <span className="text-xs sm:text-sm font-bold text-slate-200 font-mono mt-0.5 truncate">
                                   {formatVal(prevVal)}
                                 </span>
                               </div>
 
-                              {/* 오늘 주가 */}
+                              {/* 최근 거래일 주가 */}
                               <div className="bg-slate-900/90 py-1 px-2 sm:py-1.5 sm:px-2.5 rounded-lg border border-slate-800/80 flex flex-col justify-between min-w-0">
-                                <span className="text-[10px] sm:text-[11px] text-slate-400 font-semibold flex items-center justify-between">
-                                  <span className="truncate">오늘</span>
-                                  <span className="font-mono text-[9px] sm:text-[10px] text-amber-300 font-bold bg-amber-500/10 px-1 py-0.2 rounded border border-amber-500/20 truncate">
-                                    {formatUpdateTime(latest).slice(-5)}
+                                <span className="text-[10px] sm:text-[11px] text-slate-400 font-semibold flex items-center justify-between gap-1">
+                                  <span className="truncate">최근 거래일</span>
+                                  <span className="font-mono text-[8.5px] sm:text-[9.5px] text-amber-300 font-bold bg-amber-500/10 px-1 py-0.2 rounded border border-amber-500/20 truncate">
+                                    {formatUpdateTime(latest)}
                                   </span>
                                 </span>
                                 <span className="text-xs sm:text-sm font-extrabold text-indigo-400 font-mono mt-0.5 truncate">
