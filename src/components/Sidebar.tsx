@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { Home, Activity, Briefcase, Globe, Layers, ChevronDown, ChevronRight, Bug, Mail, Copy, Check, X, Sun, Moon } from 'lucide-react';
 import { getMenuTree } from '../api/menu';
 import type { MenuCategory } from '../api/menu';
+import { getTrackedStocks } from '../api/client';
+import type { TrackedStock } from '../api/types';
 
 interface SidebarProps {
   activeCategory: string;
@@ -22,11 +24,12 @@ const ICON_MAP: Record<string, any> = {
 
 export function Sidebar({ activeCategory, activeItemCode, onSelectMenuItem, isMobileOpen, onCloseMobile, theme, onToggleTheme }: SidebarProps) {
   const [categories, setCategories] = useState<MenuCategory[]>([]);
+  const [trackedStocks, setTrackedStocks] = useState<TrackedStock[]>([]);
   const [copiedEmail, setCopiedEmail] = useState(false);
   const [openCategories, setOpenCategories] = useState<Record<string, boolean>>({
     INVESTOR: true,
-    MARKET: true,
     MACRO: true,
+    MARKET: true,
     STOCK: true,
   });
 
@@ -34,6 +37,10 @@ export function Sidebar({ activeCategory, activeItemCode, onSelectMenuItem, isMo
     getMenuTree()
       .then((data) => setCategories(data))
       .catch((err) => console.error('Failed to load menu tree:', err));
+
+    getTrackedStocks()
+      .then((stocks) => setTrackedStocks(stocks))
+      .catch((err) => console.error('Failed to load tracked stocks in sidebar:', err));
   }, []);
 
   const toggleCategory = (catCode: string) => {
@@ -71,6 +78,7 @@ export function Sidebar({ activeCategory, activeItemCode, onSelectMenuItem, isMo
         { id: 8, item_code: 'US10Y', item_name: '미국채 10년물 금리', target_symbol: 'US10Y' },
         { id: 9, item_code: 'KR_BOND_3Y', item_name: '한국 국고채 3년물 금리', target_symbol: 'KR_BOND_3Y' },
         { id: 10, item_code: 'WTI', item_name: 'WTI 유가 선물', target_symbol: 'WTI' },
+        { id: 26, item_code: 'USDJPY', item_name: '달러/엔 환율', target_symbol: 'USDJPY' },
       ],
     },
     {
@@ -88,15 +96,93 @@ export function Sidebar({ activeCategory, activeItemCode, onSelectMenuItem, isMo
       category_code: 'STOCK',
       category_name: '관심 종목',
       icon: 'star',
-      items: [
-        { id: 11, item_code: '005930', item_name: '삼성전자 (005930)', target_symbol: '005930' },
-        { id: 12, item_code: '000660', item_name: 'SK하이닉스 (000660)', target_symbol: '000660' },
-        { id: 13, item_code: '035420', item_name: 'NAVER (035420)', target_symbol: '035420' },
+      isGrouped: true,
+      groups: [
+        {
+          title: '🇰🇷 국내 증시',
+          categoryCode: 'STOCK',
+          badge: '15분',
+          items: [
+            { id: 11, item_code: '005930', item_name: '삼성전자 (005930)', target_symbol: '005930' },
+            { id: 12, item_code: '000660', item_name: 'SK하이닉스 (000660)', target_symbol: '000660' },
+            { id: 13, item_code: '035420', item_name: 'NAVER (035420)', target_symbol: '035420' },
+          ],
+        },
+        {
+          title: '🇺🇸 미국 증시',
+          categoryCode: 'STOCK_US',
+          badge: '10분',
+          items: [
+            { id: 14, item_code: 'NVDA', item_name: '엔비디아 (NVDA)', target_symbol: 'NVDA' },
+            { id: 15, item_code: 'GOOGL', item_name: '구글 (GOOGL)', target_symbol: 'GOOGL' },
+            { id: 16, item_code: 'ORCL', item_name: '오라클 (ORCL)', target_symbol: 'ORCL' },
+          ],
+        },
       ],
     },
   ];
 
-  const menuList = categories.length > 0 ? categories : (defaultMenuStructure as any[]);
+  const defaultDomestic = [
+    { id: 11, item_code: '005930', item_name: '삼성전자 (005930)', target_symbol: '005930' },
+    { id: 12, item_code: '000660', item_name: 'SK하이닉스 (000660)', target_symbol: '000660' },
+    { id: 13, item_code: '035420', item_name: 'NAVER (035420)', target_symbol: '035420' },
+  ];
+
+  const defaultUs = [
+    { id: 14, item_code: 'NVDA', item_name: '엔비디아 (NVDA)', target_symbol: 'NVDA' },
+    { id: 15, item_code: 'GOOGL', item_name: '구글 (GOOGL)', target_symbol: 'GOOGL' },
+    { id: 16, item_code: 'ORCL', item_name: '오라클 (ORCL)', target_symbol: 'ORCL' },
+  ];
+
+  const menuList = (categories.length > 0 ? categories : (defaultMenuStructure as any[])).map((cat) => {
+    if (cat.category_code === 'STOCK') {
+      const isUsStock = (s: TrackedStock) =>
+        ['NASDAQ', 'NYSE', 'AMEX'].includes((s.market || '').toUpperCase()) ||
+        ['NVDA', 'GOOGL', 'ORCL', 'AAPL', 'MSFT', 'TSLA'].includes(s.stock_code.toUpperCase());
+
+      const dbDomestic = trackedStocks
+        .filter((s) => !isUsStock(s) && s.stock_code !== 'TRACKED_STOCKS')
+        .map((s) => ({
+          id: s.id,
+          item_code: s.stock_code,
+          item_name: `${s.stock_name} (${s.stock_code})`,
+          target_symbol: s.stock_code,
+        }));
+
+      const dbUs = trackedStocks
+        .filter((s) => isUsStock(s) && s.stock_code !== 'TRACKED_STOCKS')
+        .map((s) => ({
+          id: s.id,
+          item_code: s.stock_code,
+          item_name: `${s.stock_name} (${s.stock_code})`,
+          target_symbol: s.stock_code,
+        }));
+
+      const domesticItems = dbDomestic.length > 0 ? dbDomestic : defaultDomestic;
+      const usItems = dbUs.length > 0 ? dbUs : defaultUs;
+
+      return {
+        ...cat,
+        category_name: '관심 종목',
+        isGrouped: true,
+        groups: [
+          {
+            title: '🇰🇷 국내 증시',
+            categoryCode: 'STOCK',
+            badge: '15분',
+            items: domesticItems,
+          },
+          {
+            title: '🇺🇸 미국 증시',
+            categoryCode: 'STOCK_US',
+            badge: '10분',
+            items: usItems,
+          },
+        ],
+      };
+    }
+    return cat;
+  });
 
   const renderContent = () => (
     <>
@@ -133,9 +219,11 @@ export function Sidebar({ activeCategory, activeItemCode, onSelectMenuItem, isMo
         </button>
 
         {/* 대카테고리 & 소카테고리 리스트 */}
-        {menuList.map((cat) => {
+        {menuList.map((cat: any) => {
           const IconComp = ICON_MAP[cat.category_code] || Activity;
-          const isCategoryActive = activeCategory === cat.category_code;
+          const isCategoryActive =
+            activeCategory === cat.category_code ||
+            (cat.category_code === 'STOCK' && (activeCategory === 'STOCK' || activeCategory === 'STOCK_US'));
           const isOpen = openCategories[cat.category_code] ?? true;
 
           return (
@@ -161,27 +249,67 @@ export function Sidebar({ activeCategory, activeItemCode, onSelectMenuItem, isMo
               </button>
 
               {/* 소카테고리 세부 항목 목록 */}
-              {isOpen && cat.items && cat.items.length > 0 && (
-                <div className="pl-6 pr-2 py-1 space-y-1 border-l-2 border-slate-800 light:border-slate-300 ml-4">
-                  {cat.items.map((item: any) => {
-                    const isItemActive = activeItemCode === item.item_code;
-                    return (
-                      <div
-                        key={item.id || item.item_code}
-                        onClick={() =>
-                          handleItemClick(cat.category_code, item.item_code, item.target_symbol)
-                        }
-                        className={`text-xs px-3 py-2 rounded-lg cursor-pointer transition font-medium flex items-center justify-between ${
-                          isItemActive
-                            ? 'bg-amber-500/20 light:bg-amber-500/20 text-amber-300 light:text-amber-800 font-bold border border-amber-500/40 light:border-amber-500/50 shadow-sm'
-                            : 'text-slate-400 light:text-slate-600 hover:text-slate-100 light:hover:text-slate-900 hover:bg-slate-800/50 light:hover:bg-slate-200/50'
-                        }`}
-                      >
-                        <span className="truncate">{item.item_name}</span>
+              {isOpen && (
+                cat.isGrouped ? (
+                  /* 관심종목 하위 서브 그룹 (국내 증시 / 미국 증시) */
+                  <div className="pl-3.5 pr-1 py-1 space-y-2.5 border-l-2 border-slate-800 light:border-slate-300 ml-4">
+                    {cat.groups.map((group: any) => (
+                      <div key={group.title} className="space-y-1">
+                        <div className="flex items-center justify-between px-2 pt-1 pb-0.5">
+                          <span className="text-[11px] font-bold text-indigo-400 light:text-indigo-600 flex items-center gap-1">
+                            {group.title}
+                          </span>
+                          <span className="text-[9px] font-mono font-bold px-1.5 py-0.2 rounded bg-indigo-500/10 text-indigo-300 light:text-indigo-700 border border-indigo-500/20">
+                            {group.badge}
+                          </span>
+                        </div>
+                        <div className="space-y-0.5">
+                          {group.items.map((item: any) => {
+                            const isItemActive = activeCategory === group.categoryCode && activeItemCode === item.item_code;
+                            return (
+                              <div
+                                key={item.id || item.item_code}
+                                onClick={() =>
+                                  handleItemClick(group.categoryCode, item.item_code, item.target_symbol)
+                                }
+                                className={`text-xs px-3 py-1.5 rounded-lg cursor-pointer transition font-medium flex items-center justify-between ${
+                                  isItemActive
+                                    ? 'bg-amber-500/20 light:bg-amber-500/20 text-amber-300 light:text-amber-800 font-bold border border-amber-500/40 light:border-amber-500/50 shadow-sm'
+                                    : 'text-slate-400 light:text-slate-600 hover:text-slate-100 light:hover:text-slate-900 hover:bg-slate-800/50 light:hover:bg-slate-200/50'
+                                }`}
+                              >
+                                <span className="truncate">{item.item_name}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
                       </div>
-                    );
-                  })}
-                </div>
+                    ))}
+                  </div>
+                ) : (
+                  cat.items && cat.items.length > 0 && (
+                    <div className="pl-6 pr-2 py-1 space-y-1 border-l-2 border-slate-800 light:border-slate-300 ml-4">
+                      {cat.items.map((item: any) => {
+                        const isItemActive = activeItemCode === item.item_code;
+                        return (
+                          <div
+                            key={item.id || item.item_code}
+                            onClick={() =>
+                              handleItemClick(cat.category_code, item.item_code, item.target_symbol)
+                            }
+                            className={`text-xs px-3 py-2 rounded-lg cursor-pointer transition font-medium flex items-center justify-between ${
+                              isItemActive
+                                ? 'bg-amber-500/20 light:bg-amber-500/20 text-amber-300 light:text-amber-800 font-bold border border-amber-500/40 light:border-amber-500/50 shadow-sm'
+                                : 'text-slate-400 light:text-slate-600 hover:text-slate-100 light:hover:text-slate-900 hover:bg-slate-800/50 light:hover:bg-slate-200/50'
+                            }`}
+                          >
+                            <span className="truncate">{item.item_name}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )
+                )
               )}
             </div>
           );

@@ -108,4 +108,6 @@ export interface StockCandle {
   low: number;
   close: number;
   volume: number;
+  currency?: string;
+  updated_at?: string;
 }

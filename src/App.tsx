@@ -705,13 +705,20 @@ function MacroCandleChart({
     // 그 외 지표는 소수점 3번째 자리에서 반올림하여 최대 2자리까지 표출
     const rounded = Math.round(v * 100) / 100;
     if (symbol === 'USDKRW' || /^\d{6}$/.test(symbol)) {
-      return `${rounded.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })} 원`;
+      return `${rounded.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })} 원`;
     }
     if (symbol === 'WTI') {
       const roundedWti = Math.round(v * 1000) / 1000;
       return `$ ${roundedWti.toLocaleString(undefined, { minimumFractionDigits: 3, maximumFractionDigits: 3 })}`;
     }
-    if (symbol === 'NASDAQ' || symbol === 'S&P500' || symbol === '^IXIC' || symbol === '^GSPC') {
+    if (
+      symbol === 'NASDAQ' ||
+      symbol === 'S&P500' ||
+      symbol === '^IXIC' ||
+      symbol === '^GSPC' ||
+      ['NVDA', 'GOOGL', 'ORCL', 'AAPL', 'MSFT', 'TSLA'].includes(symbol.toUpperCase()) ||
+      (!/^\d{6}$/.test(symbol) && symbol.length <= 5 && !['KOSPI', 'KOSDAQ'].includes(symbol))
+    ) {
       return `$ ${rounded.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     }
     if (symbol === 'KOSPI' || symbol === 'KOSDAQ') {
@@ -1365,7 +1372,7 @@ function MacroCandleChart({
   );
 }
 
-// 전체 메뉴 순차 순서 정의 (수급분석 -> 거시경제 -> 시장지수 -> 관심종목)
+// 전체 메뉴 순차 순서 정의 (수급분석 -> 거시경제 -> 시장지수 -> 관심종목(국내) -> 관심종목(미국))
 const ORDERED_MENU_ITEMS: FlatMenuItem[] = [
   // 수급 분석 (1, 2, 3, 4)
   { categoryCode: 'INVESTOR', itemCode: 'FOREIGNER_2Y_CUM', symbol: 'FOREIGNER', title: '수급 분석 > 1. 외국인 2년 누적' },
@@ -1386,10 +1393,15 @@ const ORDERED_MENU_ITEMS: FlatMenuItem[] = [
   { categoryCode: 'MARKET', itemCode: 'NASDAQ', symbol: '^IXIC', title: '시장 지수 > 나스닥' },
   { categoryCode: 'MARKET', itemCode: 'S&P500', symbol: '^GSPC', title: '시장 지수 > S&P500' },
 
-  // 관심 종목
-  { categoryCode: 'STOCK', itemCode: '005930', symbol: '005930', title: '관심 종목 > 삼성전자 (005930)' },
-  { categoryCode: 'STOCK', itemCode: '000660', symbol: '000660', title: '관심 종목 > SK하이닉스 (000660)' },
-  { categoryCode: 'STOCK', itemCode: '035420', symbol: '035420', title: '관심 종목 > NAVER (035420)' },
+  // 관심 종목 (국내)
+  { categoryCode: 'STOCK', itemCode: '005930', symbol: '005930', title: '관심 종목 (국내) > 삼성전자 (005930)' },
+  { categoryCode: 'STOCK', itemCode: '000660', symbol: '000660', title: '관심 종목 (국내) > SK하이닉스 (000660)' },
+  { categoryCode: 'STOCK', itemCode: '035420', symbol: '035420', title: '관심 종목 (국내) > NAVER (035420)' },
+
+  // 관심 종목 (미국)
+  { categoryCode: 'STOCK_US', itemCode: 'NVDA', symbol: 'NVDA', title: '관심 종목 (미국) > 엔비디아 (NVDA)' },
+  { categoryCode: 'STOCK_US', itemCode: 'GOOGL', symbol: 'GOOGL', title: '관심 종목 (미국) > 구글 (GOOGL)' },
+  { categoryCode: 'STOCK_US', itemCode: 'ORCL', symbol: 'ORCL', title: '관심 종목 (미국) > 오라클 (ORCL)' },
 ];
 
 const ALL_INVESTOR_SUBJECTS: InvestorSubjectOption[] = [
@@ -1598,6 +1610,9 @@ export function App() {
     if (category === 'STOCK') {
       return '평일 15분 간격 (08:00~20:00)';
     }
+    if (category === 'STOCK_US') {
+      return '미국 장중 10분 간격 (한국 22:00~06:00)';
+    }
     return '실시간 갱신';
   };
   const [indexData, setIndexData] = useState<MarketIndexCandle[]>([]);
@@ -1771,14 +1786,21 @@ export function App() {
         const fetchStart = dayjs(toInputDate(startDate)).subtract(1, 'year').format('YYYYMMDD');
         const data = await getMacroIndicators(fetchStart, endDate, symbolCode, periodType);
         setMacroData(data);
-      } else if (activeCategory === 'STOCK') {
+      } else if (activeCategory === 'STOCK' || activeCategory === 'STOCK_US') {
         const stocks = await getTrackedStocks();
         setTrackedStocksList(stocks);
 
-        // 관심종목 기본값은 가장 앞에 있는 데이터(stocks[0])
+        // 시장별 종목 목록 분리 (미국: NASDAQ, NYSE, AMEX / 국내: 그 외)
+        const isUsCategory = activeCategory === 'STOCK_US';
+        const filteredStocks = stocks.filter((s) =>
+          isUsCategory
+            ? ['NASDAQ', 'NYSE', 'AMEX'].includes((s.market || '').toUpperCase())
+            : !['NASDAQ', 'NYSE', 'AMEX'].includes((s.market || '').toUpperCase())
+        );
+
         let code = targetSymbol || activeItemCode;
-        if (stocks.length > 0 && (!code || !stocks.some((s) => s.stock_code === code))) {
-          code = stocks[0].stock_code;
+        if (filteredStocks.length > 0 && (!code || !filteredStocks.some((s) => s.stock_code === code))) {
+          code = filteredStocks[0].stock_code;
           setActiveItemCode(code);
           setTargetSymbol(code);
         }
@@ -1825,7 +1847,7 @@ export function App() {
       if (itemCode === 'INVESTOR_NET') {
         // 주체별 순매수 기본 2주 (14일) 설정
         setStartDate(dayjs().subtract(14, 'day').format('YYYYMMDD'));
-      } else if (categoryCode === 'MACRO' || categoryCode === 'MARKET' || categoryCode === 'STOCK') {
+      } else if (categoryCode === 'MACRO' || categoryCode === 'MARKET' || categoryCode === 'STOCK' || categoryCode === 'STOCK_US') {
         // 거시 경제, 시장 지수, 관심 종목 기본 1년 설정 (2년 캔들밀림 보정)
         setStartDate(dayjs().subtract(1, 'year').format('YYYYMMDD'));
       }
@@ -1973,7 +1995,7 @@ export function App() {
                   {activeCategory === 'INVESTOR' && <Briefcase className="w-4 h-4 sm:w-5 sm:h-5 text-rose-400 shrink-0" />}
                   {activeCategory === 'MARKET' && <Activity className="w-4 h-4 sm:w-5 sm:h-5 text-amber-400 shrink-0" />}
                   {activeCategory === 'MACRO' && <Globe className="w-4 h-4 sm:w-5 sm:h-5 text-emerald-400 shrink-0" />}
-                  {activeCategory === 'STOCK' && <Layers className="w-4 h-4 sm:w-5 sm:h-5 text-indigo-400 shrink-0" />}
+                  {(activeCategory === 'STOCK' || activeCategory === 'STOCK_US') && <Layers className="w-4 h-4 sm:w-5 sm:h-5 text-indigo-400 shrink-0" />}
                   <span className="font-outfit truncate">
                     {activeItemCode === 'FOREIGNER_2Y_CUM' && '수급 분석 > 1. 외국인 2년 누적 (주봉 고정)'}
                     {activeItemCode === 'MAIN_3SUB_CUM' && '수급 분석 > 2. 외국인, 개인, 기관, 연기금 누적 (주봉 고정)'}
@@ -1981,7 +2003,8 @@ export function App() {
                     {activeItemCode === 'INVESTOR_NET' && '수급 분석 > 4. 주체별 순매수'}
                     {activeCategory === 'MARKET' && `시장 지수 > ${activeItemCode} (${targetSymbol})`}
                     {activeCategory === 'MACRO' && `거시 경제 > ${activeItemCode} (${targetSymbol})`}
-                    {activeCategory === 'STOCK' && `관심 종목 > ${activeItemCode}`}
+                    {activeCategory === 'STOCK' && `관심 종목 (국내) > ${activeItemCode}`}
+                    {activeCategory === 'STOCK_US' && `관심 종목 (미국) > ${activeItemCode}`}
                   </span>
                 </div>
 
@@ -3308,8 +3331,8 @@ export function App() {
                     </div>
                   )}
 
-                  {/* 4. 관심 종목 (드롭다운 메뉴, 봉차트 기본 & 3대 보조지표, 상시 최신 데이터 요약 카드 연동) */}
-                  {activeCategory === 'STOCK' && (() => {
+                  {/* 4. 관심 종목 (국내 증시 & 미국 증시 탭 분리, 드롭다운 메뉴, 봉차트 기본 & 3대 보조지표, 통화별 요약 카드 연동) */}
+                  {(activeCategory === 'STOCK' || activeCategory === 'STOCK_US') && (() => {
                     const processedStockData = stockCandles.map((d, i) => {
                       const prevClose = i > 0 ? (stockCandles[i - 1].close ?? 0) : (d.close ?? d.open ?? 0);
                       const open = d.open != null ? d.open : prevClose;
@@ -3326,24 +3349,65 @@ export function App() {
                       };
                     });
 
+                    const isUsStock =
+                      activeCategory === 'STOCK_US' ||
+                      ['NASDAQ', 'NYSE', 'AMEX'].includes((trackedStocks.find((s) => s.stock_code === activeItemCode)?.market || '').toUpperCase()) ||
+                      stockCandles[0]?.currency === 'USD';
+
+                    const currentCategoryStocks = trackedStocks.filter((s) =>
+                      activeCategory === 'STOCK_US'
+                        ? ['NASDAQ', 'NYSE', 'AMEX'].includes((s.market || '').toUpperCase())
+                        : !['NASDAQ', 'NYSE', 'AMEX'].includes((s.market || '').toUpperCase())
+                    );
+
                     return (
                       <div className="bg-slate-900/90 rounded-2xl p-2.5 sm:p-4 lg:p-4 border border-slate-700/80 shadow-xl shadow-slate-950/60 space-y-2 sm:space-y-2.5">
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="flex items-center space-x-1.5 sm:space-x-3 min-w-0">
-                            <h3 className="text-xs sm:text-base font-bold text-white flex items-center gap-1 shrink-0">
-                              <Layers className="w-4 h-4 sm:w-5 sm:h-5 text-indigo-400 shrink-0" />
-                              <span className="hidden xs:inline">종목:</span>
-                            </h3>
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div className="flex items-center space-x-1.5 sm:space-x-3 min-w-0 flex-wrap gap-y-1">
+                            {/* 국내 증시 / 미국 증시 2단 세그먼트 스위처 */}
+                            <div className="flex items-center bg-slate-950 p-0.5 rounded-xl border border-slate-800 shadow-inner shrink-0">
+                              <button
+                                onClick={() => {
+                                  const domesticStocks = trackedStocks.filter((s) => !['NASDAQ', 'NYSE', 'AMEX'].includes((s.market || '').toUpperCase()));
+                                  const firstCode = domesticStocks[0]?.stock_code || '005930';
+                                  handleSelectMenuItem('STOCK', firstCode, firstCode);
+                                }}
+                                className={`px-2 py-1 rounded-lg text-xs font-bold transition flex items-center gap-1 cursor-pointer ${
+                                  activeCategory === 'STOCK'
+                                    ? 'bg-gradient-to-r from-indigo-500 to-indigo-600 text-white shadow-md'
+                                    : 'text-slate-400 hover:text-slate-200'
+                                }`}
+                              >
+                                <span>🇰🇷</span>
+                                <span>국내</span>
+                              </button>
+                              <button
+                                onClick={() => {
+                                  const usStocks = trackedStocks.filter((s) => ['NASDAQ', 'NYSE', 'AMEX'].includes((s.market || '').toUpperCase()));
+                                  const firstCode = usStocks[0]?.stock_code || 'NVDA';
+                                  handleSelectMenuItem('STOCK_US', firstCode, firstCode);
+                                }}
+                                className={`px-2 py-1 rounded-lg text-xs font-bold transition flex items-center gap-1 cursor-pointer ${
+                                  activeCategory === 'STOCK_US'
+                                    ? 'bg-gradient-to-r from-indigo-500 to-indigo-600 text-white shadow-md'
+                                    : 'text-slate-400 hover:text-slate-200'
+                                }`}
+                              >
+                                <span>🇺🇸</span>
+                                <span>미국</span>
+                              </button>
+                            </div>
+
                             {/* 드롭다운 셀렉트 박스 */}
                             <select
                               value={activeItemCode}
                               onChange={(e) => {
                                 const code = e.target.value;
-                                handleSelectMenuItem('STOCK', code, code);
+                                handleSelectMenuItem(activeCategory, code, code);
                               }}
-                              className="bg-slate-950 text-amber-300 font-bold text-xs px-2.5 py-1.5 sm:px-3 sm:py-1.5 rounded-xl border border-slate-700 hover:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer shadow-md max-w-[140px] xs:max-w-[200px] truncate"
+                              className="bg-slate-950 text-amber-300 font-bold text-xs px-2.5 py-1.5 sm:px-3 sm:py-1.5 rounded-xl border border-slate-700 hover:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer shadow-md max-w-[150px] xs:max-w-[220px] truncate"
                             >
-                              {trackedStocks.map((stock) => (
+                              {currentCategoryStocks.map((stock) => (
                                 <option key={stock.stock_code} value={stock.stock_code} className="bg-slate-900 text-white font-medium">
                                   {stock.stock_name} ({stock.stock_code})
                                 </option>
@@ -3421,8 +3485,15 @@ export function App() {
                           const diffPct = prevVal ? (diff / Math.abs(prevVal)) * 100 : 0;
                           const isUp = diff >= 0;
 
-                          const formatVal = (v: number) => `${Number(v).toLocaleString()} 원`;
-                          const formatDiff = (v: number) => `${v >= 0 ? '+' : ''}${v.toLocaleString()} 원`;
+                          const formatVal = (v: number) =>
+                            isUsStock
+                              ? `$ ${Number(v).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                              : `${Number(v).toLocaleString()} 원`;
+
+                          const formatDiff = (v: number) =>
+                            isUsStock
+                              ? `${v >= 0 ? '+' : '-'}$${Math.abs(Number(v)).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                              : `${v >= 0 ? '+' : ''}${v.toLocaleString()} 원`;
 
                           return (
                             <div className="grid grid-cols-3 gap-1.5 sm:gap-2.5 p-1.5 sm:p-2 sm:py-1.5 bg-slate-950/80 rounded-xl border border-slate-800 font-sans">
@@ -3478,7 +3549,12 @@ export function App() {
                                 <Tooltip
                                   cursor={false}
                                   contentStyle={{ backgroundColor: '#1E293B', borderColor: '#475569', borderRadius: '12px' }}
-                                  formatter={(val: any, name: any) => [`${Number(val).toLocaleString()} 원`, name]}
+                                  formatter={(val: any, name: any) => [
+                                    isUsStock
+                                      ? `$ ${Number(val).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                                      : `${Number(val).toLocaleString()} 원`,
+                                    name,
+                                  ]}
                                 />
                                 <Legend />
                                 <Line type="monotone" dataKey="close" name="종가" stroke="#818CF8" strokeWidth={2.5} dot={false} />
