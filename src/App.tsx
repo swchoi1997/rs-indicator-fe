@@ -3362,40 +3362,21 @@ export function App() {
 
                     return (
                       <div className="bg-slate-900/90 rounded-2xl p-2.5 sm:p-4 lg:p-4 border border-slate-700/80 shadow-xl shadow-slate-950/60 space-y-2 sm:space-y-2.5">
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <div className="flex items-center space-x-1.5 sm:space-x-3 min-w-0 flex-wrap gap-y-1">
-                            {/* 국내 증시 / 미국 증시 2단 세그먼트 스위처 */}
-                            <div className="flex items-center bg-slate-950 p-0.5 rounded-xl border border-slate-800 shadow-inner shrink-0">
-                              <button
-                                onClick={() => {
-                                  const domesticStocks = trackedStocks.filter((s) => !['NASDAQ', 'NYSE', 'AMEX'].includes((s.market || '').toUpperCase()));
-                                  const firstCode = domesticStocks[0]?.stock_code || '005930';
-                                  handleSelectMenuItem('STOCK', firstCode, firstCode);
-                                }}
-                                className={`px-2 py-1 rounded-lg text-xs font-bold transition flex items-center gap-1 cursor-pointer ${
-                                  activeCategory === 'STOCK'
-                                    ? 'bg-gradient-to-r from-indigo-500 to-indigo-600 text-white shadow-md'
-                                    : 'text-slate-400 hover:text-slate-200'
-                                }`}
-                              >
-                                <span>🇰🇷</span>
-                                <span>국내</span>
-                              </button>
-                              <button
-                                onClick={() => {
-                                  const usStocks = trackedStocks.filter((s) => ['NASDAQ', 'NYSE', 'AMEX'].includes((s.market || '').toUpperCase()));
-                                  const firstCode = usStocks[0]?.stock_code || 'NVDA';
-                                  handleSelectMenuItem('STOCK_US', firstCode, firstCode);
-                                }}
-                                className={`px-2 py-1 rounded-lg text-xs font-bold transition flex items-center gap-1 cursor-pointer ${
-                                  activeCategory === 'STOCK_US'
-                                    ? 'bg-gradient-to-r from-indigo-500 to-indigo-600 text-white shadow-md'
-                                    : 'text-slate-400 hover:text-slate-200'
-                                }`}
-                              >
-                                <span>🇺🇸</span>
-                                <span>미국</span>
-                              </button>
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center space-x-1.5 sm:space-x-3 min-w-0">
+                            {/* 시장 상태 뱃지 (선택 불가 정적 뱃지) */}
+                            <div className="flex items-center gap-1 px-2 py-1 rounded-xl bg-slate-950 border border-slate-700/80 text-xs font-bold text-slate-200 shrink-0 shadow-sm">
+                              {activeCategory === 'STOCK_US' ? (
+                                <>
+                                  <span>🇺🇸</span>
+                                  <span className="text-indigo-300">미국</span>
+                                </>
+                              ) : (
+                                <>
+                                  <span>🇰🇷</span>
+                                  <span className="text-amber-300">국내</span>
+                                </>
+                              )}
                             </div>
 
                             {/* 드롭다운 셀렉트 박스 */}
