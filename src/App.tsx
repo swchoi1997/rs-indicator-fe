@@ -88,10 +88,10 @@ function MacroCandleChart({
 }) {
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
 
-  // 보조지표 옵션 선택 상태 (기본: 이동평균선 5/20/60/120/200 ON, 볼린저/일목 OFF)
+  // 보조지표 옵션 선택 상태 (기본: 이동평균선 및 일목균형표 ON, 볼린저밴드 OFF)
   const [showMA, setShowMA] = useState<boolean>(true);
   const [showBollinger, setShowBollinger] = useState<boolean>(false);
-  const [showIchimoku, setShowIchimoku] = useState<boolean>(false);
+  const [showIchimoku, setShowIchimoku] = useState<boolean>(true);
   const [isIndicatorDropdownOpen, setIsIndicatorDropdownOpen] = useState<boolean>(false);
 
   // 차트 확대/축소 (Pinch-to-zoom & Pan) 상태 관리
