@@ -4,9 +4,10 @@ import { TrendingUp, Bug, Mail, Copy, Check, X, Menu } from 'lucide-react';
 interface HeaderProps {
   onToggleMobileMenu?: () => void;
   isMobileMenuOpen?: boolean;
+  onGoHome?: () => void;
 }
 
-export function Header({ onToggleMobileMenu, isMobileMenuOpen }: HeaderProps) {
+export function Header({ onToggleMobileMenu, isMobileMenuOpen, onGoHome }: HeaderProps) {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [copied, setCopied] = useState(false);
 
@@ -24,14 +25,21 @@ export function Header({ onToggleMobileMenu, isMobileMenuOpen }: HeaderProps) {
             {isMobileMenuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
           </button>
 
-          <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-gradient-to-tr from-amber-500 via-rose-500 to-indigo-600 flex items-center justify-center shadow-md shadow-rose-500/20 shrink-0">
-            <TrendingUp className="w-4 h-4 sm:w-5 sm:h-5 text-white" />
-          </div>
-          <div className="flex items-baseline space-x-1.5 sm:space-x-2">
-            <h1 className="text-sm sm:text-xl font-bold font-outfit text-white tracking-wide truncate">
-              R's Indicator Tracker
-            </h1>
-            <span className="text-[10px] sm:text-xs text-slate-400 font-medium font-mono">v1.0</span>
+          {/* 로고 & 타이틀 (클릭 시 HOME으로 이동) */}
+          <div
+            onClick={onGoHome}
+            className="flex items-center space-x-2 sm:space-x-3 cursor-pointer select-none group"
+            title="HOME 대시보드로 이동"
+          >
+            <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-gradient-to-tr from-amber-500 via-rose-500 to-indigo-600 flex items-center justify-center shadow-md shadow-rose-500/20 shrink-0 group-hover:scale-105 transition-transform">
+              <TrendingUp className="w-4 h-4 sm:w-5 sm:h-5 text-white" />
+            </div>
+            <div className="flex items-baseline space-x-1.5 sm:space-x-2">
+              <h1 className="text-sm sm:text-xl font-bold font-outfit text-white tracking-wide truncate group-hover:text-amber-300 transition-colors">
+                Indicator Tracker
+              </h1>
+              <span className="text-[10px] sm:text-xs text-slate-400 font-medium font-mono">v1.1</span>
+            </div>
           </div>
         </div>
 

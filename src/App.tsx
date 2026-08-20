@@ -1962,10 +1962,11 @@ export function App() {
 
   return (
     <div className="min-h-screen bg-[#0B0F19] text-gray-100 flex flex-col font-sans">
-      {/* 상단 R's Indicator Tracker 로고 헤더 (모바일 햄버거 메뉴 연동) */}
+      {/* 상단 Indicator Tracker 로고 헤더 (모바일 햄버거 메뉴 연동 & HOME 이동) */}
       <Header
         onToggleMobileMenu={() => setIsMobileMenuOpen((prev) => !prev)}
         isMobileMenuOpen={isMobileMenuOpen}
+        onGoHome={() => handleSelectMenuItem('HOME', 'HOME', 'HOME')}
       />
 
       {/* 전체 페이지 레이아웃 */}
