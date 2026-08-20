@@ -1608,7 +1608,7 @@ export function App() {
       return '평일 정기 수집';
     }
     if (category === 'STOCK') {
-      return '평일 15분 간격 (08:00~20:00)';
+      return stockMarketSource === 'KRX' ? '평일 15분 간격 (09:00~15:30)' : '평일 15분 간격 (08:00~20:00)';
     }
     if (category === 'STOCK_US') {
       return '미국 장중 10분 간격 (한국 22:00~06:00)';
@@ -1619,6 +1619,8 @@ export function App() {
   const [macroData, setMacroData] = useState<MacroIndicatorItem[]>([]);
   const [trackedStocks, setTrackedStocksList] = useState<TrackedStock[]>([]);
   const [stockCandles, setStockCandles] = useState<StockCandle[]>([]);
+  const [stockMarketSource, setStockMarketSource] = useState<'ALL' | 'KRX'>('ALL');
+  const [krxPrevCandle, setKrxPrevCandle] = useState<{ date: string; close: number } | null>(null);
   const [loading, setLoading] = useState<boolean>(false);
 
   // 날짜 변환 헬퍼 (YYYY-MM-DD <-> YYYYMMDD)
@@ -1808,8 +1810,47 @@ export function App() {
         if (code) {
           // 보조지표(200이평 등)가 시작일 첫 캔들부터 선명하게 연결되도록 조회 시작일 + 1년 전 데이터를 추가 요청
           const fetchStart = dayjs(toInputDate(startDate)).subtract(1, 'year').format('YYYYMMDD');
-          const candles = await getStockCandles(fetchStart, endDate, code, periodType);
+          const sourceParam = isUsCategory ? 'ALL' : stockMarketSource;
+          const candles = await getStockCandles(fetchStart, endDate, code, periodType, sourceParam);
           setStockCandles(candles);
+
+          // 국내 주식의 경우 직전 거래일 공식 KRX 종가 별도 확보
+          if (activeCategory === 'STOCK') {
+            try {
+              if (stockMarketSource === 'KRX') {
+                if (candles.length > 1) {
+                  const prev = candles[candles.length - 2];
+                  setKrxPrevCandle({ date: prev.date, close: prev.close });
+                } else {
+                  setKrxPrevCandle(null);
+                }
+              } else {
+                // 통합 시세 모드일 때는 최근 15일치 KRX 데이터를 조회하여 직전 거래일 KRX 공식 종가 확보
+                const recentKrxStart = dayjs(toInputDate(endDate)).subtract(15, 'day').format('YYYYMMDD');
+                const krxCandles = await getStockCandles(recentKrxStart, endDate, code, 'D', 'KRX');
+                if (krxCandles.length > 0) {
+                  const latestDate = candles[candles.length - 1]?.date;
+                  const prevKrx = krxCandles.filter((c) => c.date < latestDate);
+                  if (prevKrx.length > 0) {
+                    const lastPrev = prevKrx[prevKrx.length - 1];
+                    setKrxPrevCandle({ date: lastPrev.date, close: lastPrev.close });
+                  } else if (krxCandles.length > 1) {
+                    const lastPrev = krxCandles[krxCandles.length - 2];
+                    setKrxPrevCandle({ date: lastPrev.date, close: lastPrev.close });
+                  } else {
+                    setKrxPrevCandle({ date: krxCandles[0].date, close: krxCandles[0].close });
+                  }
+                } else {
+                  setKrxPrevCandle(null);
+                }
+              }
+            } catch (e) {
+              console.warn('Failed to fetch KRX prev candle:', e);
+              setKrxPrevCandle(null);
+            }
+          } else {
+            setKrxPrevCandle(null);
+          }
         }
       }
     } catch (err) {
@@ -1825,7 +1866,7 @@ export function App() {
       return;
     }
     fetchData();
-  }, [activeCategory, activeItemCode, targetSymbol, periodType, startDate, endDate, intradayMarket, intradayDate]);
+  }, [activeCategory, activeItemCode, targetSymbol, periodType, startDate, endDate, intradayMarket, intradayDate, stockMarketSource]);
 
   const handleSelectMenuItem = (categoryCode: string, itemCode: string, symbol?: string) => {
     const nextSymbol = symbol || itemCode;
@@ -3362,22 +3403,51 @@ export function App() {
 
                     return (
                       <div className="bg-slate-900/90 rounded-2xl p-2.5 sm:p-4 lg:p-4 border border-slate-700/80 shadow-xl shadow-slate-950/60 space-y-2 sm:space-y-2.5">
-                        <div className="flex items-center justify-between gap-2">
-                          <div className="flex items-center space-x-1.5 sm:space-x-3 min-w-0">
-                            {/* 시장 상태 뱃지 (선택 불가 정적 뱃지) */}
-                            <div className="flex items-center gap-1 px-2 py-1 rounded-xl bg-slate-950 border border-slate-700/80 text-xs font-bold text-slate-200 shrink-0 shadow-sm">
-                              {activeCategory === 'STOCK_US' ? (
-                                <>
-                                  <span>🇺🇸</span>
-                                  <span className="text-indigo-300">미국</span>
-                                </>
-                              ) : (
-                                <>
-                                  <span>🇰🇷</span>
-                                  <span className="text-amber-300">국내</span>
-                                </>
-                              )}
-                            </div>
+                        <div className="flex items-center justify-between gap-1.5 sm:gap-2">
+                          <div className="flex items-center space-x-1.5 sm:space-x-2.5 min-w-0">
+                            {/* 시장 상태 및 시세 소스 스위처 */}
+                            {activeCategory === 'STOCK_US' ? (
+                              <div className="flex items-center gap-1 px-2 py-1 rounded-xl bg-slate-950 border border-slate-700/80 text-xs font-bold text-slate-200 shrink-0 shadow-sm">
+                                <span>🇺🇸</span>
+                                <span className="text-indigo-300">미국</span>
+                              </div>
+                            ) : (
+                              /* 국내 주식: 통합 시세(NXT+KRX) vs KRX 정규장 원클릭 토글 스위처 */
+                              <div
+                                onClick={() => setStockMarketSource((prev) => (prev === 'ALL' ? 'KRX' : 'ALL'))}
+                                className="flex items-center bg-slate-950 p-0.5 rounded-xl border border-slate-800 hover:border-slate-600 shadow-inner shrink-0 cursor-pointer select-none transition"
+                                title="클릭 시 통합 시세(08:00~20:00) / KRX 정규장(09:00~15:30) 자동 전환"
+                              >
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setStockMarketSource((prev) => (prev === 'ALL' ? 'KRX' : 'ALL'));
+                                  }}
+                                  className={`px-1.5 py-0.5 sm:px-2 sm:py-1 rounded-lg text-[11px] sm:text-xs font-bold transition flex items-center gap-0.5 sm:gap-1 cursor-pointer ${
+                                    stockMarketSource === 'ALL'
+                                      ? 'bg-gradient-to-r from-indigo-500 to-indigo-600 text-white shadow-md'
+                                      : 'text-slate-400 hover:text-slate-200'
+                                  }`}
+                                >
+                                  <span>🌐</span>
+                                  <span>통합</span>
+                                </button>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setStockMarketSource((prev) => (prev === 'ALL' ? 'KRX' : 'ALL'));
+                                  }}
+                                  className={`px-1.5 py-0.5 sm:px-2 sm:py-1 rounded-lg text-[11px] sm:text-xs font-bold transition flex items-center gap-0.5 sm:gap-1 cursor-pointer ${
+                                    stockMarketSource === 'KRX'
+                                      ? 'bg-gradient-to-r from-emerald-600 to-teal-600 text-white shadow-md'
+                                      : 'text-slate-400 hover:text-slate-200'
+                                  }`}
+                                >
+                                  <span>🏛️</span>
+                                  <span>KRX</span>
+                                </button>
+                              </div>
+                            )}
 
                             {/* 드롭다운 셀렉트 박스 */}
                             <select
@@ -3386,7 +3456,7 @@ export function App() {
                                 const code = e.target.value;
                                 handleSelectMenuItem(activeCategory, code, code);
                               }}
-                              className="bg-slate-950 text-amber-300 font-bold text-xs px-2.5 py-1.5 sm:px-3 sm:py-1.5 rounded-xl border border-slate-700 hover:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer shadow-md max-w-[150px] xs:max-w-[220px] truncate"
+                              className="bg-slate-950 text-amber-300 font-bold text-xs px-2 py-1 sm:px-3 sm:py-1.5 rounded-xl border border-slate-700 hover:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer shadow-md max-w-[125px] xs:max-w-[170px] sm:max-w-[220px] truncate"
                             >
                               {currentCategoryStocks.map((stock) => (
                                 <option key={stock.stock_code} value={stock.stock_code} className="bg-slate-900 text-white font-medium">
@@ -3395,7 +3465,7 @@ export function App() {
                               ))}
                             </select>
 
-                            <div className="hidden sm:inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] sm:text-xs font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/20 shadow-sm shrink-0">
+                            <div className="hidden md:inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] sm:text-xs font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/20 shadow-sm shrink-0">
                               <span className="relative flex h-1.5 w-1.5">
                                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                                 <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500"></span>
@@ -3459,9 +3529,23 @@ export function App() {
                         {/* 상시 최신 개별 종목 데이터 요약 카드 (모바일 3열 콤팩트 배치) */}
                         {processedStockData.length > 0 && (() => {
                           const latest = processedStockData[processedStockData.length - 1];
-                          const prev = processedStockData.length > 1 ? processedStockData[processedStockData.length - 2] : null;
+                          const fallbackPrev = processedStockData.length > 1 ? processedStockData[processedStockData.length - 2] : null;
                           const latestVal = latest.close ?? latest.value;
-                          const prevVal = prev ? (prev.close ?? prev.value) : latestVal;
+
+                          // 국내 주식이고 KRX 직전 종가가 있으면 공식 KRX 종가 적용
+                          const effectivePrevDate =
+                            activeCategory === 'STOCK' && krxPrevCandle
+                              ? krxPrevCandle.date
+                              : fallbackPrev
+                              ? fallbackPrev.date
+                              : '-';
+                          const prevVal =
+                            activeCategory === 'STOCK' && krxPrevCandle
+                              ? krxPrevCandle.close
+                              : fallbackPrev
+                              ? fallbackPrev.close ?? fallbackPrev.value
+                              : latestVal;
+
                           const diff = latestVal - prevVal;
                           const diffPct = prevVal ? (diff / Math.abs(prevVal)) * 100 : 0;
                           const isUp = diff >= 0;
@@ -3478,11 +3562,11 @@ export function App() {
 
                           return (
                             <div className="grid grid-cols-3 gap-1.5 sm:gap-2.5 p-1.5 sm:p-2 sm:py-1.5 bg-slate-950/80 rounded-xl border border-slate-800 font-sans">
-                              {/* 직전 거래일 주가 */}
+                              {/* 직전 거래일 주가 (국내 주식은 항상 KRX 공식 종가) */}
                               <div className="bg-slate-900/90 py-1 px-2 sm:py-1.5 sm:px-2.5 rounded-lg border border-slate-800/80 flex flex-col justify-between min-w-0">
                                 <span className="text-[10px] sm:text-[11px] text-slate-400 font-semibold flex items-center justify-between">
-                                  <span className="truncate">직전 거래일</span>
-                                  <span className="font-mono text-[9px] sm:text-[10px] text-slate-400 font-bold">{prev ? prev.date : '-'}</span>
+                                  <span className="truncate">직전 {activeCategory === 'STOCK' ? '(KRX)' : '거래일'}</span>
+                                  <span className="font-mono text-[9px] sm:text-[10px] text-slate-400 font-bold">{effectivePrevDate}</span>
                                 </span>
                                 <span className="text-xs sm:text-sm font-bold text-slate-200 font-mono mt-0.5 truncate">
                                   {formatVal(prevVal)}
@@ -3492,7 +3576,9 @@ export function App() {
                               {/* 최근 거래일 주가 */}
                               <div className="bg-slate-900/90 py-1 px-2 sm:py-1.5 sm:px-2.5 rounded-lg border border-slate-800/80 flex flex-col justify-between min-w-0">
                                 <span className="text-[10px] sm:text-[11px] text-slate-400 font-semibold flex items-center justify-between gap-1">
-                                  <span className="truncate">최근 거래일</span>
+                                  <span className="truncate">
+                                    최근 {activeCategory === 'STOCK' ? (stockMarketSource === 'KRX' ? '(KRX)' : '(통합)') : ''}
+                                  </span>
                                   <span className="font-mono text-[8.5px] sm:text-[9.5px] text-amber-300 font-bold bg-amber-500/10 px-1 py-0.2 rounded border border-amber-500/20 truncate">
                                     {formatUpdateTime(latest)}
                                   </span>

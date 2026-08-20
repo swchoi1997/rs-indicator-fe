@@ -107,7 +107,8 @@ export const getStockCandles = async (
   startDate: string,
   endDate: string,
   stockCode: string,
-  periodType = 'D'
+  periodType = 'D',
+  source: 'ALL' | 'KRX' = 'ALL'
 ): Promise<StockCandle[]> => {
   const { data } = await api.get<StockCandle[]>('/stocks/candles', {
     params: {
@@ -115,6 +116,7 @@ export const getStockCandles = async (
       end_date: endDate,
       stock_code: stockCode,
       period_type: periodType,
+      source,
     },
   });
   return data;
